@@ -6,7 +6,7 @@ import tensorflow as tf
 import tensorflow_hub as hub
 import collections
 import numpy as np
-from pathos.multiprocessing import ProcessPool
+import multiprocessing
 import os
 import hashlib
 
@@ -40,8 +40,6 @@ class FeatureWriter(object):
   def process_feature(self, feature):
     """Write a InputFeature to the TFRecordWriter as a tf.train.Example."""
     self.num_features += 1
-    if self.num_features % 1e3 == 0:
-        tf.logging.info(self.num_features, self.filename)
 
     def create_int_feature(values):
       feature = tf.train.Feature(
@@ -56,12 +54,9 @@ class FeatureWriter(object):
     if self.is_training:
       features["start_position"] = create_int_feature([feature.targets[0]])
       features["end_position"] = create_int_feature([feature.targets[1]])
-      features['answer_id'] = create_int_feature([feature.answer_id])
 
     tf_example = tf.train.Example(features=tf.train.Features(feature=features))
     self._writer.write(tf_example.SerializeToString())
-    tf.logging.info("wrote {} examples".format(self.num_features))
-    return
 
   def close(self):
     self._writer.close()
@@ -151,8 +146,6 @@ def convert_example(example,
         "TargetByteRange", ["short_start", "short_end", "long_start", "long_end"])
 
     if is_training:
-        _cls_id = tokenizer.convert_tokens_to_ids([CLS])[0]
-        _sep_id = tokenizer.convert_tokens_to_ids([SEP])[0]
         # if all annotated short spans are contained in the instance,
         # we set the start and end target indices to point to the
         # smallest span containing all annotated short answer spans
@@ -170,6 +163,7 @@ def convert_example(example,
                                              short_end=short_answer_byte_end_ix,
                                              long_start=long_answer.get('start_byte'),
                                              long_end=long_answer.get('end_byte'))
+        print("target byte range:{}".format(target_byte_range))
 
     for (i, token) in enumerate(example.get('document_tokens')):
         _token = token.get('token')
@@ -214,7 +208,9 @@ def convert_example(example,
     # break the context into chunks.
     # for training, modulo the answers.
     for (doc_span_index, doc_span) in enumerate(doc_spans):
+        print(doc_span)
         tokens, segment_ids = [], []
+        targets = []
         tokens.append(CLS)
         segment_ids.append(0)
         for token in query_tokens:
@@ -248,8 +244,10 @@ def convert_example(example,
             # bytes for the current span
             span_start_byte, span_end_byte = start_bytes[doc_span.start], end_bytes[
                 doc_span.start + doc_span.length - 1]
+            print("span start byte: {}, span end byte: {}".format(span_start_byte, span_end_byte))
             # collect a single label. if short answer exists, collect. if not, check long answer.
             if target_byte_range.short_start >= span_start_byte and target_byte_range.short_end <= span_end_byte:
+                print("short span")
                 answer_id = 0
                 # byte ix position
                 s_ix = np.where(start_bytes == target_byte_range.short_start)[0]
@@ -259,6 +257,7 @@ def convert_example(example,
                 assert 0 <= s < max_seq_length
                 assert 0 <= e < max_seq_length
             elif target_byte_range.long_start >= span_start_byte and target_byte_range.long_end <= span_end_byte:
+                print("long span")
                 answer_id = 1
                 # index. this takes into account cases where long_start coincide with HTML tags.
                 s_ix = np.where(start_bytes >= target_byte_range.long_start)[0].min()
@@ -270,10 +269,12 @@ def convert_example(example,
             else:
                 answer_id = 2
                 # downsample null instances if specified.
-                s, e = _cls_id, _cls_id
+                s, e = CLS, CLS
                 if downsample_null_instances:
                     if np.random.random(1) > 1. / DOWNSAMPLE:
                         continue
+            print("s: {}".format(s))
+            print("e: {}".format(e))
             # targets are inclusive.
             targets = (s, e)
             feature = InputFeatures(input_ids=input_ids,
@@ -282,13 +283,12 @@ def convert_example(example,
                                     targets=targets,
                                     answer_id=answer_id,
                                     tokens=tokens)
-            tf.logging.info([feature.targets, feature.answer_id])
-        train_writer(feature)
+            outputs.append(feature)
+        train_writer(outputs)
+    return outputs
 
 
 def main(_):
-    import jsonlines
-    from functools import partial
     tf.logging.set_verbosity(tf.logging.INFO)
 
     _dev_path = os.path.join(FLAGS.bert_data_dir, 'dev')
@@ -297,40 +297,40 @@ def main(_):
 
     tokenizer = create_tokenizer_from_hub_module()
 
-    def _create_tf_records(is_training, _file_path):
-        file_name = os.path.split(_file_path)[-1].split('.')[0]
-        tf.logging.info(_file_path)
+    def _create_tf_records(_file_path, is_training):
+
+        examples = []
+        with open(_file_path, 'rb') as f:
+            for item in json_lines.reader(f):
+                examples.append(item)
+        file_name = 'train' if is_training else 'eval'
+        hash_object = hashlib.md5(_file_path)
+        file_name += '_' + hash_object.hexdigest()
         train_writer = FeatureWriter(
-            filename=os.path.join(FLAGS.bert_data_dir, "{}.tf_record".format(file_name)),
+            filename=os.path.join(FLAGS.output_dir, "{}.tf_record".format(file_name)),
             is_training=is_training)
-        tf.logging.info(_file_path)
-        with jsonlines.open(_file_path) as reader:
-            for i, example in enumerate(reader):
-                if i % 1e3 == 0: tf.logging.info("{}:{}".format(file_name, i))
-                convert_example(example,
-                                tokenizer=tokenizer,
-                                is_training=is_training,
-                                max_seq_length=FLAGS.max_seq_length,
-                                max_query_length=FLAGS.max_seq_length,
-                                train_writer=train_writer.process_feature)
-
-        tf.logging.info("{} completed".format(file_name))
+        for example in examples:
+            convert_example(example,
+                            tokenizer=tokenizer,
+                            is_training=is_training,
+                            max_seq_length=FLAGS.max_seq_length,
+                            max_query_length=FLAGS.max_seq_length,
+                            train_writer=train_writer)
         train_writer.close()
+        del examples
 
-    # def create_tf_records(is_training, _path):
-    #     pool = ProcessPool(1)
-    #     fn = partial(_create_tf_records, {'is_training': is_training})
-    #     _files = [_file for _file in os.listdir(_path) if _file.endswith(".jsonl")]
-    #     _file_path = [os.path.join(_path, _file) for _file in _files]
-    #     pool.map(fn, _file_path)
-    #     pool.close()
+    from functools import partial
+    import json_lines
 
-    _files = [_file for _file in os.listdir(_train_path) if _file.endswith(".jsonl")]
-    _file_path = [os.path.join(_train_path, _file) for _file in _files]
-    _create_tf_records(True, _file_path[0])
+    def create_tf_records(is_training, _path):
+        pool = multiprocessing.Pool(10)
+        fn = partial(_create_tf_records, {'is_training': is_training})
+        _files = [_file for _file in os.listdir(os.path.join(_path, "*jsonl"))]
+        pool.map(fn, _files)
+        pool.close()
 
-    #create_tf_records(is_training=True, _path=_train_path)
-    #create_tf_records(is_training=True, _path=_dev_path)
+    #create_tf_records(True, _train_path)
+    create_tf_records(True, _dev_path)
 
 
 if __name__ == "__main__":
