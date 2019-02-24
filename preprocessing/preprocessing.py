@@ -6,7 +6,9 @@ import tensorflow as tf
 import tensorflow_hub as hub
 import collections
 import numpy as np
-import pandas as pd
+import multiprocessing
+import os
+import hashlib
 
 # This is a path to an uncased (all lowercase) version of BERT
 BERT_MODEL_HUB = "https://tfhub.dev/google/bert_uncased_L-12_H-768_A-12/1"
@@ -16,9 +18,65 @@ SEP = "[SEP]"
 DOWNSAMPLE = 50
 
 
-# assert len(input_ids) == max_seq_length
-# assert len(input_mask) == max_seq_length
-# assert len(segment_ids) == max_seq_length
+flags = tf.flags
+FLAGS = flags.FLAGS
+
+## Required parameters
+flags.DEFINE_string(
+    "output_dir", None,
+    "The output directory where the model checkpoints will be written.")
+
+flags.DEFINE_integer(
+    "max_seq_length", 512,
+    "The maximum total input sequence length after WordPiece tokenization. "
+    "Sequences shorter "
+    "than this will be padded.")
+
+flags.DEFINE_integer(
+    "max_query_length", 64,
+    "The maximum number of tokens for the question. Questions longer than "
+    "this will be truncated to this length.")
+
+
+flags.DEFINE_string(
+    "predict_file", None,
+    "prediction files")
+
+flags.DEFINE_bool("is_training", False, "Whether to run training.")
+
+
+class FeatureWriter(object):
+  """Writes InputFeature to TF example file."""
+
+  def __init__(self, filename, is_training):
+    self.filename = filename
+    self.is_training = is_training
+    self.num_features = 0
+    self._writer = tf.python_io.TFRecordWriter(filename)
+
+  def process_feature(self, feature):
+    """Write a InputFeature to the TFRecordWriter as a tf.train.Example."""
+    self.num_features += 1
+
+    def create_int_feature(values):
+      feature = tf.train.Feature(
+          int64_list=tf.train.Int64List(value=list(values)))
+      return feature
+
+    features = collections.OrderedDict()
+    features["input_ids"] = create_int_feature(feature.input_ids)
+    features["input_mask"] = create_int_feature(feature.input_mask)
+    features["segment_ids"] = create_int_feature(feature.segment_ids)
+
+    if self.is_training:
+      features["start_position"] = create_int_feature([feature.targets[0]])
+      features["end_position"] = create_int_feature([feature.targets[1]])
+
+    tf_example = tf.train.Example(features=tf.train.Features(feature=features))
+    self._writer.write(tf_example.SerializeToString())
+
+  def close(self):
+    self._writer.close()
 
 
 class InputFeatures(object):
@@ -29,12 +87,14 @@ class InputFeatures(object):
                  input_mask,
                  segment_ids,
                  targets,
-                 tokens):
+                 tokens,
+                 answer_id=1):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.targets = targets
         self.tokens = tokens
+        self.answer_id = answer_id
 
     def __str__(self):
         return self.__repr__()
@@ -51,6 +111,8 @@ class InputFeatures(object):
             s += ", segment_ids: {}".format(self.segment_ids)
         if self.tokens:
             s += ", tokens: {}".format(self.tokens)
+        if self.answer_id:
+            s += ", answer_id: {}".format(self.answer_id)
         return s
 
 
@@ -67,8 +129,13 @@ def create_tokenizer_from_hub_module():
         vocab_file=vocab_file, do_lower_case=do_lower_case)
 
 
-def convert_examples_to_features(example, tokenizer, max_seq_length, max_query_length=None, is_training=True,
-                                 downsample_null_instances=True):
+def convert_example(example,
+                    tokenizer,
+                    max_seq_length,
+                    max_query_length=None,
+                    is_training=True,
+                    downsample_null_instances=True,
+                    train_writer=None):
     """
 
     :param example: example with following attributes: 
@@ -77,6 +144,7 @@ def convert_examples_to_features(example, tokenizer, max_seq_length, max_query_l
     :param max_seq_length: sequence length for the model.
     :param is_training: sequence length for the model.
     :param downsample_null_instances
+    :param train_writer
     :return: 
     """
     outputs = []
@@ -113,7 +181,7 @@ def convert_examples_to_features(example, tokenizer, max_seq_length, max_query_l
                                              long_start=long_answer.get('start_byte'),
                                              long_end=long_answer.get('end_byte'))
         print("target byte range:{}".format(target_byte_range))
-    sub_token_ix = 0
+
     for (i, token) in enumerate(example.get('document_tokens')):
         _token = token.get('token')
         sub_tokens = tokenizer.tokenize(_token)
@@ -197,6 +265,7 @@ def convert_examples_to_features(example, tokenizer, max_seq_length, max_query_l
             # collect a single label. if short answer exists, collect. if not, check long answer.
             if target_byte_range.short_start >= span_start_byte and target_byte_range.short_end <= span_end_byte:
                 print("short span")
+                answer_id = 0
                 # byte ix position
                 s_ix = np.where(start_bytes == target_byte_range.short_start)[0]
                 s = s_ix.min() - doc_span.start + total_offset - 1
@@ -206,6 +275,7 @@ def convert_examples_to_features(example, tokenizer, max_seq_length, max_query_l
                 assert 0 <= e < max_seq_length
             elif target_byte_range.long_start >= span_start_byte and target_byte_range.long_end <= span_end_byte:
                 print("long span")
+                answer_id = 1
                 # index. this takes into account cases where long_start coincide with HTML tags.
                 s_ix = np.where(start_bytes >= target_byte_range.long_start)[0].min()
                 s = s_ix - doc_span.start + total_offset - 1
@@ -214,6 +284,7 @@ def convert_examples_to_features(example, tokenizer, max_seq_length, max_query_l
                 assert 0 <= s < max_seq_length
                 assert 0 <= e < max_seq_length
             else:
+                answer_id = 2
                 # downsample null instances if specified.
                 s, e = CLS, CLS
                 if downsample_null_instances:
@@ -222,20 +293,55 @@ def convert_examples_to_features(example, tokenizer, max_seq_length, max_query_l
             print("s: {}".format(s))
             print("e: {}".format(e))
             # targets are inclusive.
-            targets.append((s, e))
+            targets = (s, e)
             feature = InputFeatures(input_ids=input_ids,
                                     input_mask=input_mask,
                                     segment_ids=segment_ids,
                                     targets=targets,
+                                    answer_id=answer_id,
                                     tokens=tokens)
-            # TODO: TFWriter
             outputs.append(feature)
+        train_writer(outputs)
     return outputs
 
 
 def main(_):
     tf.logging.set_verbosity(tf.logging.INFO)
+    tf.gfile.MakeDirs(FLAGS.output_dir)
+    tf.gfile.MakeDirs(FLAGS.output_dir)
+
     tokenizer = create_tokenizer_from_hub_module()
+
+    def _create_tf_records(_file_path):
+        import json_lines
+        examples = []
+        with open(_file_path, 'rb') as f:
+            for item in json_lines.reader(f):
+                examples.append(item)
+        file_name = 'train' if FLAGS.is_training else 'eval'
+        hash_object = hashlib.md5(_file_path)
+        file_name += '_' + hash_object.hexdigest()
+        train_writer = FeatureWriter(
+            filename=os.path.join(FLAGS.output_dir, "{}.tf_record".format(file_name)),
+            is_training=FLAGS.is_training)
+        for example in examples:
+            convert_example(example,
+                            tokenizer=tokenizer,
+                            is_training=FLAGS.is_training,
+                            max_seq_length=FLAGS.max_seq_length,
+                            max_query_length=FLAGS.max_seq_length,
+                            train_writer=train_writer)
+        train_writer.close()
+        del examples
+
+    pool = multiprocessing.Pool()
+
+    # TODO: What I am passing here?
+    pool.map(_create_tf_records, range(0, 10))
+    pool.close()
+
+
+
 
 
 if __name__ == "__main__":
