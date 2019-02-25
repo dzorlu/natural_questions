@@ -22,7 +22,6 @@ flags = tf.flags
 FLAGS = flags.FLAGS
 
 ## Required parameters
-
 flags.DEFINE_string(
     "bert_data_dir", None,
     "The output directory where the tf records will be written.")
@@ -50,6 +49,7 @@ class FeatureWriter(object):
 
     features = collections.OrderedDict()
     features["input_ids"] = create_int_feature(feature.input_ids)
+    features["example_id"] = create_int_feature([feature.example_id])
     features["input_mask"] = create_int_feature(feature.input_mask)
     features["segment_ids"] = create_int_feature(feature.segment_ids)
 
@@ -71,12 +71,14 @@ class InputFeatures(object):
     """A single set of features of data."""
 
     def __init__(self,
+                 example_id,
                  input_ids,
                  input_mask,
                  segment_ids,
                  targets,
                  tokens,
                  answer_id=1):
+        self.example_id = example_id
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
@@ -89,6 +91,8 @@ class InputFeatures(object):
 
     def __repr__(self):
         s = ""
+        if self.example_id:
+            s += "example_id: {}".format(self.example_id)
         if self.targets:
             s += "targets: {}".format(self.targets)
         if self.input_ids:
@@ -135,7 +139,6 @@ def convert_example(example,
     :param train_writer
     :return: 
     """
-    outputs = []
     if not max_query_length:
         max_query_length = max_seq_length // 50
     query_tokens = tokenizer.tokenize(example.get('question_text'))
@@ -245,92 +248,96 @@ def convert_example(example,
         assert len(segment_ids) == max_seq_length
 
         if is_training:
-            # bytes for the current span
-            span_start_byte, span_end_byte = start_bytes[doc_span.start], end_bytes[
-                doc_span.start + doc_span.length - 1]
-            # collect a single label. if short answer exists, collect. if not, check long answer.
-            if target_byte_range.short_start >= span_start_byte and target_byte_range.short_end <= span_end_byte:
-                answer_id = 0
-                # byte ix position
-                s_ix = np.where(start_bytes == target_byte_range.short_start)[0]
-                s = s_ix.min() - doc_span.start + total_offset - 1
-                e_ix = np.where(end_bytes == target_byte_range.short_end)[0]
-                e = e_ix.max() - doc_span.start + total_offset - 1
-                assert 0 <= s < max_seq_length
-                assert 0 <= e < max_seq_length
-            elif target_byte_range.long_start >= span_start_byte and target_byte_range.long_end <= span_end_byte:
-                answer_id = 1
-                # index. this takes into account cases where long_start coincide with HTML tags.
-                s_ix = np.where(start_bytes >= target_byte_range.long_start)[0].min()
-                s = s_ix - doc_span.start + total_offset - 1
-                e_ix = np.where(end_bytes <= target_byte_range.long_end)[0].max()
-                e = e_ix - doc_span.start + total_offset - 1
-                assert 0 <= s < max_seq_length
-                assert 0 <= e < max_seq_length
-            else:
-                answer_id = 2
-                # downsample null instances if specified.
-                s, e = _cls_id, _cls_id
-                if downsample_null_instances:
-                    if np.random.random(1) > 1. / DOWNSAMPLE:
-                        continue
+          answer_id = None
+          targets = None
+          s_ix, e_ix = None, None
+          # bytes for the current span
+          span_start_byte, span_end_byte = start_bytes[doc_span.start], end_bytes[
+              doc_span.start + doc_span.length - 1]
+          # collect a single label. if short answer exists, collect. if not, check long answer.
+          if target_byte_range.short_start >= span_start_byte and target_byte_range.short_end <= span_end_byte:
+              answer_id = 0
+              # byte ix position
+              s_ix = np.where(start_bytes == target_byte_range.short_start)[0]
+              e_ix = np.where(end_bytes == target_byte_range.short_end)[0]
+          elif target_byte_range.long_start >= span_start_byte and target_byte_range.long_end <= span_end_byte:
+              answer_id = 1
+              # index. this takes into account cases where long_start coincide with HTML tags.
+              s_ix = np.where(start_bytes >= target_byte_range.long_start)[0]
+              e_ix = np.where(end_bytes <= target_byte_range.long_end)[0]
+          if answer_id in (0, 1) and s_ix is not None and e_ix is not None:
+            s = s_ix.min() - doc_span.start + total_offset - 1
+            e = e_ix.max() - doc_span.start + total_offset - 1
+            tf.logging.info((s, e))
+            assert 0 <= s < max_seq_length
+            if not 0 <= e < max_seq_length:
+              # this ensures the last token for the byte is included in the current span.
+              continue
             # targets are inclusive.
             targets = (s, e)
-            feature = InputFeatures(input_ids=input_ids,
+          elif downsample_null_instances:
+            # downsample null instances if specified.
+            if np.random.random(1) > 1. / DOWNSAMPLE:
+              continue
+            answer_id = 2
+
+            targets = (_cls_id, _cls_id)
+          if targets:
+            feature = InputFeatures(example_id=example.get('example_id'),
+                                    input_ids=input_ids,
                                     input_mask=input_mask,
                                     segment_ids=segment_ids,
                                     targets=targets,
                                     answer_id=answer_id,
                                     tokens=tokens)
-            tf.logging.info([feature.targets, feature.answer_id])
-        train_writer(feature)
+            tf.logging.info([feature.targets, feature.answer_id, feature.example_id])
+          train_writer(feature)
 
 
 def main(_):
-    import jsonlines
-    from functools import partial
-    tf.logging.set_verbosity(tf.logging.INFO)
+  import jsonlines
+  #TODO: Break it into train / predict. Only does train portion below.
+  tf.logging.set_verbosity(tf.logging.INFO)
 
-    _dev_path = os.path.join(FLAGS.bert_data_dir, 'dev')
-    _train_path = os.path.join(FLAGS.bert_data_dir, 'train')
-    [tf.gfile.MakeDirs(_dir) for _dir in [_train_path, _dev_path]]
+  _dev_path = os.path.join(FLAGS.bert_data_dir, 'dev')
+  _train_path = os.path.join(FLAGS.bert_data_dir, 'train')
+  [tf.gfile.MakeDirs(_dir) for _dir in [_train_path, _dev_path]]
 
-    tokenizer = create_tokenizer_from_hub_module()
+  tokenizer = create_tokenizer_from_hub_module()
 
-    def _create_tf_records(is_training, _file_path):
-        file_name = os.path.split(_file_path)[-1].split('.')[0]
-        tf.logging.info(_file_path)
-        train_writer = FeatureWriter(
-            filename=os.path.join(FLAGS.bert_data_dir, "{}.tf_record".format(file_name)),
-            is_training=is_training)
-        tf.logging.info(_file_path)
-        with jsonlines.open(_file_path) as reader:
-            for i, example in enumerate(reader):
-                if i % 1e3 == 0: tf.logging.info("{}:{}".format(file_name, i))
-                convert_example(example,
-                                tokenizer=tokenizer,
-                                is_training=is_training,
-                                max_seq_length=FLAGS.max_seq_length,
-                                max_query_length=FLAGS.max_seq_length,
-                                train_writer=train_writer.process_feature)
+  def _create_tf_records(is_training, _train_path, _file_path):
+    file_name = os.path.split(_file_path)[-1].split('.')[0]
+    tf.logging.info(_file_path)
+    # writes into the same directory
+    train_writer = FeatureWriter(
+        filename=os.path.join(_train_path, "{}.tf_record".format(file_name)),
+        is_training=is_training)
+    tf.logging.info(_file_path)
+    with jsonlines.open(_file_path) as reader:
+        for i, example in enumerate(reader):
+            if i % 1e3 == 0: tf.logging.info("{}:{}".format(file_name, i))
+            convert_example(example,
+                            tokenizer=tokenizer,
+                            is_training=is_training,
+                            max_seq_length=FLAGS.max_seq_length,
+                            max_query_length=FLAGS.max_seq_length,
+                            train_writer=train_writer.process_feature)
 
-        tf.logging.info("{} completed".format(file_name))
-        train_writer.close()
+    tf.logging.info("{} completed".format(file_name))
+    train_writer.close()
 
-    # def create_tf_records(is_training, _path):
-    #     pool = ProcessPool(1)
-    #     fn = partial(_create_tf_records, {'is_training': is_training})
-    #     _files = [_file for _file in os.listdir(_path) if _file.endswith(".jsonl")]
-    #     _file_path = [os.path.join(_path, _file) for _file in _files]
-    #     pool.map(fn, _file_path)
-    #     pool.close()
+  # def create_tf_records(is_training, _path):
+  #     pool = ProcessPool(1)
+  #     fn = partial(_create_tf_records, {'is_training': is_training})
+  #     _files = [_file for _file in os.listdir(_path) if _file.endswith(".jsonl")]
+  #     _file_path = [os.path.join(_path, _file) for _file in _files]
+  #     pool.map(fn, _file_path)
+  #     pool.close()
 
-    _files = [_file for _file in os.listdir(_train_path) if _file.endswith(".jsonl")]
-    _file_path = [os.path.join(_train_path, _file) for _file in _files]
-    _create_tf_records(True, _file_path[0])
-
-    #create_tf_records(is_training=True, _path=_train_path)
-    #create_tf_records(is_training=True, _path=_dev_path)
+  _files = [_file for _file in os.listdir(_train_path) if _file.endswith(".jsonl")]
+  _file_path = [os.path.join(_train_path, _file) for _file in _files]
+  for f in _file_path:
+    _create_tf_records(True, _train_path, f)
 
 
 if __name__ == "__main__":
