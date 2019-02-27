@@ -1,14 +1,9 @@
-import bert
-from bert import run_classifier
-from bert import optimization
-from bert import tokenization
+
 import tensorflow as tf
 import tensorflow_hub as hub
 import collections
 import numpy as np
-from pathos.multiprocessing import ProcessPool
 import os
-import hashlib
 
 # This is a path to an uncased (all lowercase) version of BERT
 BERT_MODEL_HUB = "https://tfhub.dev/google/bert_uncased_L-12_H-768_A-12/1"
@@ -37,7 +32,27 @@ class FeatureWriter(object):
     self._writer = tf.python_io.TFRecordWriter(filename)
 
   def process_feature(self, feature):
-    """Write a InputFeature to the TFRecordWriter as a tf.train.Example."""
+    """
+    Write a InputFeature to the TFRecordWriter as a tf.train.Example.
+    
+    Prediction format:
+    {'predictions': [
+      {
+        'example_id': -2226525965842375672,
+        'long_answer': {
+          'start_byte': 62657, 'end_byte': 64776,
+          'start_token': 391, 'end_token': 604
+      },
+        'long_answer_score': 13.5,
+        'short_answers': [
+          {'start_byte': 64206, 'end_byte': 64280,
+           'start_token': 555, 'end_token': 560}, ...],
+        'short_answers_score': 26.4,
+        'yes_no_answer': 'NONE'
+      }, ... ]
+  }
+  
+    """
     self.num_features += 1
     if self.num_features % 1e3 == 0:
         tf.logging.info(self.num_features, self.filename)
@@ -54,8 +69,8 @@ class FeatureWriter(object):
     features["segment_ids"] = create_int_feature(feature.segment_ids)
 
     if self.is_training:
-      features["start_position"] = create_int_feature([feature.targets[0]])
-      features["end_position"] = create_int_feature([feature.targets[1]])
+      features["start_positions"] = create_int_feature([feature.targets[0]])
+      features["end_positions"] = create_int_feature([feature.targets[1]])
       features['answer_id'] = create_int_feature([feature.answer_id])
 
     tf_example = tf.train.Example(features=tf.train.Features(feature=features))
@@ -77,7 +92,9 @@ class InputFeatures(object):
                  segment_ids,
                  targets,
                  tokens,
-                 answer_id=1):
+                 answer_id,
+                 start_bytes,
+                 end_bytes):
         self.example_id = example_id
         self.input_ids = input_ids
         self.input_mask = input_mask
@@ -85,6 +102,8 @@ class InputFeatures(object):
         self.targets = targets
         self.tokens = tokens
         self.answer_id = answer_id
+        self.start_bytes = start_bytes,
+        self.end_bytes = end_bytes
 
     def __str__(self):
         return self.__repr__()
@@ -105,6 +124,10 @@ class InputFeatures(object):
             s += ", tokens: {}".format(self.tokens)
         if self.answer_id:
             s += ", answer_id: {}".format(self.answer_id)
+        if self.start_bytes:
+            s += ", start_bytes: {}".format(self.start_bytes)
+        if self.end_bytes:
+            s += ", end_bytes: {}".format(self.end_bytes)
         return s
 
 
@@ -218,17 +241,24 @@ def convert_example(example,
     # for training, modulo the answers.
     for (doc_span_index, doc_span) in enumerate(doc_spans):
         tokens, segment_ids = [], []
+        start_bytes, end_bytes = [], [] # used for prediction and eval
         tokens.append(CLS)
         segment_ids.append(0)
+        start_bytes.append(-1)
+        end_bytes.append(-1)
         for token in query_tokens:
             tokens.append(token)
             segment_ids.append(0)
+            start_bytes.append(-1)
+            end_bytes.append(-1)
         tokens.append(SEP)
         segment_ids.append(0)
         for i in range(doc_span.length):
             split_token_index = doc_span.start + i
             tokens.append(all_doc_tokens[split_token_index])
             segment_ids.append(1)
+            start_bytes.append(start_bytes[split_token_index])
+            end_bytes.append(end_bytes[split_token_index])
         tokens.append(SEP)
         segment_ids.append(1)
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
@@ -246,6 +276,8 @@ def convert_example(example,
         assert len(input_ids) == max_seq_length
         assert len(input_mask) == max_seq_length
         assert len(segment_ids) == max_seq_length
+        assert len(start_bytes) == max_seq_length
+        assert len(end_bytes) == max_seq_length
 
         if is_training:
           answer_id = None
@@ -289,6 +321,8 @@ def convert_example(example,
                                     segment_ids=segment_ids,
                                     targets=targets,
                                     answer_id=answer_id,
+                                    start_bytes=start_bytes,
+                                    end_bytes=end_bytes,
                                     tokens=tokens)
             tf.logging.info([feature.targets, feature.answer_id, feature.example_id])
           train_writer(feature)
@@ -296,7 +330,6 @@ def convert_example(example,
 
 def main(_):
   import jsonlines
-  #TODO: Break it into train / predict. Only does train portion below.
   tf.logging.set_verbosity(tf.logging.INFO)
 
   _dev_path = os.path.join(FLAGS.bert_data_dir, 'dev')
@@ -305,17 +338,16 @@ def main(_):
 
   tokenizer = create_tokenizer_from_hub_module()
 
-  def _create_tf_records(is_training, _train_path, _file_path):
-    file_name = os.path.split(_file_path)[-1].split('.')[0]
-    tf.logging.info(_file_path)
+  def _create_tf_records(is_training, _train_file):
+    tf.logging.info(_train_file)
     # writes into the same directory
+    _train_file_out = _train_file.str.replace(".jsonl", ".tf_record")
     train_writer = FeatureWriter(
-        filename=os.path.join(_train_path, "{}.tf_record".format(file_name)),
+        filename=_train_file_out,
         is_training=is_training)
-    tf.logging.info(_file_path)
-    with jsonlines.open(_file_path) as reader:
+    with jsonlines.open(_train_file) as reader:
         for i, example in enumerate(reader):
-            if i % 1e3 == 0: tf.logging.info("{}:{}".format(file_name, i))
+            if i % 1e3 == 0: tf.logging.info("{}:{}".format(_train_file, i))
             convert_example(example,
                             tokenizer=tokenizer,
                             is_training=is_training,
@@ -323,22 +355,14 @@ def main(_):
                             max_query_length=FLAGS.max_seq_length,
                             train_writer=train_writer.process_feature)
 
-    tf.logging.info("{} completed".format(file_name))
+    tf.logging.info("{} completed".format(_train_file))
     train_writer.close()
-
-  # def create_tf_records(is_training, _path):
-  #     pool = ProcessPool(1)
-  #     fn = partial(_create_tf_records, {'is_training': is_training})
-  #     _files = [_file for _file in os.listdir(_path) if _file.endswith(".jsonl")]
-  #     _file_path = [os.path.join(_path, _file) for _file in _files]
-  #     pool.map(fn, _file_path)
-  #     pool.close()
-
-  _files = [_file for _file in os.listdir(_train_path) if _file.endswith(".jsonl")]
-  _file_path = [os.path.join(_train_path, _file) for _file in _files]
-  for f in _file_path:
-    _create_tf_records(True, _train_path, f)
-
+  train_files = [os.path.join(_train_path, _file) for _file in os.listdir(_train_path) if _file.endswith(".jsonl")]
+  dev_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".jsonl")]
+  for train_file in train_files:
+    _create_tf_records(True, train_file)
+  for dev_file in dev_files:
+    _create_tf_records(True, dev_file)
 
 if __name__ == "__main__":
     tf.app.run()
