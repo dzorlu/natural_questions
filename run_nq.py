@@ -7,6 +7,9 @@ from __future__ import print_function
 
 import os
 import tensorflow as tf
+from tensorflow.keras import metrics
+from tensorflow.python.keras import backend as K
+from tensorflow.python.ops import math_ops
 
 from bert import modeling
 from bert.run_squad import create_model
@@ -16,8 +19,8 @@ flags = tf.flags
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string(
-    "nb_examples", None,
+flags.DEFINE_integer(
+    "num_train_steps", None,
     "Number of examples extracted. "
     "Determines learning rate bc BERT uses Adam decay optimizer")
 
@@ -26,15 +29,41 @@ flags.DEFINE_string(
     "Number of steps of training before eval."
     "")
 
+flags.DEFINE_string(
+    "bert_data_dir", None,
+    "The output directory where the tf records will be written.")
+
 
 NB_EPOCHS = 1
+
+
+# class SpanCategoricalAccuracy(metrics.MeanMetricWrapper):
+#   """Calculates how often span predictions match the ground truth spans.
+#
+#   This metric creates two local variables, `total` and `count` that are used to
+#   compute the frequency with which `y_pred` matches `y_true`. This frequency is
+#   ultimately returned as `sparse categorical accuracy`: an idempotent operation
+#   that simply divides `total` by `count`.
+#
+#   If `sample_weight` is `None`, weights default to 1.
+#   Use `sample_weight` of 0 to mask values.
+#   """
+#
+#   def __init__(self, name='span_categorical_accuracy', dtype=None):
+#     super(SpanCategoricalAccuracy, self).__init__(
+#         span_categorical_accuracy, name, dtype=dtype)
+#
+#
+# def span_categorical_accuracy(y_true, y_pred):
+#   return math_ops.cast(
+#       tf.reduce_all(math_ops.equal(y_true, y_pred), axis=-1),
+#       K.floatx())
 
 
 def input_fn_builder(input_files, seq_length, is_training, mode):
   """Creates an `input_fn` closure to be passed to Estimator."""
 
   name_to_features = {
-      "unique_ids": tf.FixedLenFeature([], tf.int64),
       "input_ids": tf.FixedLenFeature([seq_length], tf.int64),
       "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
       "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
@@ -53,7 +82,6 @@ def input_fn_builder(input_files, seq_length, is_training, mode):
   def input_fn(params):
     """The actual input function."""
     batch_size = params["batch_size"]
-
     # For training, we want a lot of parallel reading and shuffling.
     # For eval, we want no shuffling and parallel reading doesn't matter.
     dt = tf.data.TFRecordDataset(input_files)
@@ -84,7 +112,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     for name in sorted(features.keys()):
       tf.logging.info("  name = %s, shape = %s" % (name, features[name].shape))
 
-    unique_ids = features["unique_ids"]
     input_ids = features["input_ids"]
     input_mask = features["input_mask"]
     segment_ids = features["segment_ids"]
@@ -107,17 +134,8 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     initialized_variable_names = {}
     scaffold_fn = None
     if init_checkpoint:
-      (assignment_map, initialized_variable_names
-      ) = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
-      if use_tpu:
-
-        def tpu_scaffold():
-          tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-          return tf.train.Scaffold()
-
-        scaffold_fn = tpu_scaffold
-      else:
-        tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+      assignment_map, initialized_variable_names = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
+      tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
 
     tf.logging.info("**** Trainable Variables ****")
     for var in tvars:
@@ -127,15 +145,14 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
                       init_string)
 
-    output_spec = None
     if mode == tf.estimator.ModeKeys.PREDICT:
       predictions = {
-        "unique_ids": unique_ids,
+        "input_ids": input_ids,
         "start_logits": start_logits,
         "end_logits": end_logits,
       }
-      output_spec = tf.contrib.tpu.TPUEstimatorSpec(
-        mode=mode, predictions=predictions, scaffold_fn=scaffold_fn)
+      output_spec = tf.estimator.EstimatorSpec(
+        mode=mode, predictions=predictions)
       return output_spec
     seq_length = modeling.get_shape_list(input_ids)[1]
     def compute_loss(logits, positions):
@@ -156,33 +173,31 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     if mode == tf.estimator.ModeKeys.TRAIN:
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
-      output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+      output_spec = tf.estimator.EstimatorSpec(
           mode=mode,
           loss=total_loss,
-          train_op=train_op,
-          scaffold_fn=scaffold_fn)
+          train_op=train_op)
       return output_spec
     if mode == tf.estimator.ModeKeys.EVAL:
-        # TODO: Precision / recall / accuracy
+        # # TODO: Precision / recall / accuracy
         start_ix = tf.argmax(start_logits, axis=-1)
         end_ix = tf.argmax(end_logits, axis=-1)
-        acc = tf.metrics.accuracy(labels=start_positions, predictions=start_ix)
-        acc = tf.metrics.accuracy(labels=end_positions, predictions=end_ix)
-
-
-
-
-
-        metrics = None
-        return tf.estimator.EstimatorSpec(mode, loss=total_loss, eval_metric_ops=metrics)
+        y_pred = tf.concat([start_ix, end_ix], concat=-1)
+        y_true = tf.concat([start_positions, end_positions], axis=-1)
+        acc = tf.reduce_all(math_ops.equal(y_true, y_pred), axis=-1), K.floatx()
+        return tf.estimator.EstimatorSpec(mode,
+                                          loss=total_loss,
+                                          eval_metric_ops=[acc])
+    return tf.estimator.EstimatorSpec(mode, loss=total_loss)
   return model_fn
 
 
 def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
-  #TODO: Where do I get this from?
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
   tf.gfile.MakeDirs(FLAGS.output_dir)
+  tf.gfile.MakeDirs(FLAGS.bert_data_dir)
+  print('hereherhehreh')
 
   _dev_path = os.path.join(FLAGS.bert_data_dir, 'dev')
   _train_path = os.path.join(FLAGS.bert_data_dir, 'train')
@@ -194,7 +209,7 @@ def main(_):
       model_dir=FLAGS.output_dir
   )
 
-  num_warmup_steps = int(FLAGS.num_train_steps * FLAGS.warmup_proportion)
+  num_warmup_steps = int(FLAGS.num_train_steps * 0.01)
   # log p(t|c) not included for the squad training setup.
   model_fn = model_fn_builder(
       bert_config=bert_config,
@@ -205,16 +220,15 @@ def main(_):
       use_tpu=FLAGS.use_tpu,
       use_one_hot_embeddings=FLAGS.use_tpu)
 
-  estimator = tf.contrib.tpu.TPUEstimator(
-      use_tpu=FLAGS.use_tpu,
+  estimator = tf.estimator.Estimator(
       model_fn=model_fn,
       config=config,
-      train_batch_size=FLAGS.train_batch_size,
-      predict_batch_size=FLAGS.predict_batch_size)
+      params={'batch_size': 1})
 
   if FLAGS.do_train:
     train_files = [os.path.join(_train_path, _file) for _file in os.listdir(_train_path) if _file.endswith(".tf_record")]
     dev_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".tf_record")]
+    print(train_files)
     train_input_fn = input_fn_builder(
       input_files=train_files,
       seq_length=FLAGS.max_seq_length,
@@ -226,9 +240,11 @@ def main(_):
       is_training=True,
       mode='eval')
 
+    print('spec')
     train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn,
                                         max_steps=FLAGS.eval_after_steps)
     eval_spec = tf.estimator.EvalSpec(input_fn=train_dev_fn)
+
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
   #TODO: predict and write predictions.
@@ -237,7 +253,7 @@ def main(_):
     raise ValueError("Not implemented..")
 
 if __name__ == "__main__":
-  flags.mark_flag_as_required("vocab_file")
-  flags.mark_flag_as_required("bert_config_file")
-  flags.mark_flag_as_required("output_dir")
+  # flags.mark_flag_as_required("vocab_file")
+  # flags.mark_flag_as_required("bert_config_file")
+  # flags.mark_flag_as_required("output_dir")
   tf.app.run()
