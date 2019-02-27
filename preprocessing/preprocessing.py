@@ -5,6 +5,9 @@ import collections
 import numpy as np
 import os
 
+import bert
+from bert import tokenization
+
 # This is a path to an uncased (all lowercase) version of BERT
 BERT_MODEL_HUB = "https://tfhub.dev/google/bert_uncased_L-12_H-768_A-12/1"
 CLS = "[CLS]"
@@ -20,6 +23,11 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string(
     "bert_data_dir", None,
     "The output directory where the tf records will be written.")
+
+
+flags.DEFINE_integer(
+    "max_seq_length", None,
+    "max length")
 
 
 class FeatureWriter(object):
@@ -67,6 +75,8 @@ class FeatureWriter(object):
     features["example_id"] = create_int_feature([feature.example_id])
     features["input_mask"] = create_int_feature(feature.input_mask)
     features["segment_ids"] = create_int_feature(feature.segment_ids)
+    features["start_bytes"] = create_int_feature(feature.start_bytes)
+    features["end_bytes"] = create_int_feature(feature.end_bytes)
 
     if self.is_training:
       features["start_positions"] = create_int_feature([feature.targets[0]])
@@ -75,10 +85,10 @@ class FeatureWriter(object):
 
     tf_example = tf.train.Example(features=tf.train.Features(feature=features))
     self._writer.write(tf_example.SerializeToString())
-    tf.logging.info("wrote {} examples".format(self.num_features))
     return
 
   def close(self):
+    tf.logging.info("{} examples found".format(self.num_features))
     self._writer.close()
 
 
@@ -91,10 +101,11 @@ class InputFeatures(object):
                  input_mask,
                  segment_ids,
                  targets,
-                 tokens,
-                 answer_id,
                  start_bytes,
-                 end_bytes):
+                 end_bytes,
+                 answer_id,
+                 tokens,
+                 ):
         self.example_id = example_id
         self.input_ids = input_ids
         self.input_mask = input_mask
@@ -102,7 +113,7 @@ class InputFeatures(object):
         self.targets = targets
         self.tokens = tokens
         self.answer_id = answer_id
-        self.start_bytes = start_bytes,
+        self.start_bytes = start_bytes
         self.end_bytes = end_bytes
 
     def __str__(self):
@@ -140,7 +151,7 @@ def create_tokenizer_from_hub_module():
             vocab_file, do_lower_case = sess.run([tokenization_info["vocab_file"],
                                                   tokenization_info["do_lower_case"]])
 
-    return bert.tokenization.FullTokenizer(
+    return tokenization.FullTokenizer(
         vocab_file=vocab_file, do_lower_case=do_lower_case)
 
 
@@ -241,26 +252,30 @@ def convert_example(example,
     # for training, modulo the answers.
     for (doc_span_index, doc_span) in enumerate(doc_spans):
         tokens, segment_ids = [], []
-        start_bytes, end_bytes = [], [] # used for prediction and eval
+        start_bytes_span, end_bytes_span = [], [] # used for prediction and eval
         tokens.append(CLS)
         segment_ids.append(0)
-        start_bytes.append(-1)
-        end_bytes.append(-1)
+        start_bytes_span.append(0)
+        end_bytes_span.append(0)
         for token in query_tokens:
             tokens.append(token)
             segment_ids.append(0)
-            start_bytes.append(-1)
-            end_bytes.append(-1)
+            start_bytes_span.append(0)
+            end_bytes_span.append(0)
         tokens.append(SEP)
         segment_ids.append(0)
+        start_bytes_span.append(0)
+        end_bytes_span.append(0)
         for i in range(doc_span.length):
             split_token_index = doc_span.start + i
             tokens.append(all_doc_tokens[split_token_index])
             segment_ids.append(1)
-            start_bytes.append(start_bytes[split_token_index])
-            end_bytes.append(end_bytes[split_token_index])
+            start_bytes_span.append(start_bytes[split_token_index])
+            end_bytes_span.append(end_bytes[split_token_index])
         tokens.append(SEP)
         segment_ids.append(1)
+        start_bytes_span.append(0)
+        end_bytes_span.append(0)
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
@@ -269,15 +284,18 @@ def convert_example(example,
 
         # Zero-pad up to the sequence length.
         while len(input_ids) < max_seq_length:
-            input_ids.append(0)
-            input_mask.append(0)
-            segment_ids.append(0)
+          input_ids.append(0)
+          input_mask.append(0)
+          segment_ids.append(0)
+          start_bytes_span.append(0)
+          end_bytes_span.append(0)
 
         assert len(input_ids) == max_seq_length
         assert len(input_mask) == max_seq_length
         assert len(segment_ids) == max_seq_length
-        assert len(start_bytes) == max_seq_length
-        assert len(end_bytes) == max_seq_length
+        assert len(start_bytes_span) == max_seq_length
+        assert len(end_bytes_span) == max_seq_length
+
 
         if is_training:
           answer_id = None
@@ -312,7 +330,7 @@ def convert_example(example,
             if np.random.random(1) > 1. / DOWNSAMPLE:
               continue
             answer_id = 2
-
+            # no answer
             targets = (_cls_id, _cls_id)
           if targets:
             feature = InputFeatures(example_id=example.get('example_id'),
@@ -321,15 +339,16 @@ def convert_example(example,
                                     segment_ids=segment_ids,
                                     targets=targets,
                                     answer_id=answer_id,
-                                    start_bytes=start_bytes,
-                                    end_bytes=end_bytes,
+                                    start_bytes=start_bytes_span,
+                                    end_bytes=end_bytes_span,
                                     tokens=tokens)
-            tf.logging.info([feature.targets, feature.answer_id, feature.example_id])
+            #tf.logging.info([feature.targets, feature.answer_id, feature.example_id])
           train_writer(feature)
 
 
 def main(_):
   import jsonlines
+  import re
   tf.logging.set_verbosity(tf.logging.INFO)
 
   _dev_path = os.path.join(FLAGS.bert_data_dir, 'dev')
@@ -341,7 +360,7 @@ def main(_):
   def _create_tf_records(is_training, _train_file):
     tf.logging.info(_train_file)
     # writes into the same directory
-    _train_file_out = _train_file.str.replace(".jsonl", ".tf_record")
+    _train_file_out = re.sub(".jsonl", ".tf_record", _train_file)
     train_writer = FeatureWriter(
         filename=_train_file_out,
         is_training=is_training)
