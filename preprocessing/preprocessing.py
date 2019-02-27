@@ -316,9 +316,13 @@ def convert_example(example,
               s_ix = np.where(start_bytes >= target_byte_range.long_start)[0]
               e_ix = np.where(end_bytes <= target_byte_range.long_end)[0]
           if answer_id in (0, 1) and s_ix is not None and e_ix is not None:
-            s = s_ix.min() - doc_span.start + total_offset - 1
-            e = e_ix.max() - doc_span.start + total_offset - 1
-            tf.logging.info((s, e))
+            try:
+              s = s_ix.min() - doc_span.start + total_offset - 1
+              e = e_ix.max() - doc_span.start + total_offset - 1
+              tf.logging.info((s, e))
+            except:
+              tf.logging.info('error encountered..')
+              continue
             assert 0 <= s < max_seq_length
             if not 0 <= e < max_seq_length:
               # this ensures the last token for the byte is included in the current span.
