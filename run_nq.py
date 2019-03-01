@@ -31,7 +31,7 @@ flags.DEFINE_string(
 
 NB_EPOCHS = 1
 
-
+#
 # class SpanCategoricalAccuracy(metrics.MeanMetricWrapper):
 #   """Calculates how often span predictions match the ground truth spans.
 #
@@ -225,6 +225,7 @@ def main(_):
       mode='eval')
 
     train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn)
+    # add back steps for eval after fix
     eval_spec = tf.estimator.EvalSpec(input_fn=train_dev_fn)
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
