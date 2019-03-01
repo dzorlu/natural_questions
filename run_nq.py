@@ -197,7 +197,6 @@ def main(_):
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
   tf.gfile.MakeDirs(FLAGS.output_dir)
   tf.gfile.MakeDirs(FLAGS.bert_data_dir)
-  print('hereherhehreh')
 
   _dev_path = os.path.join(FLAGS.bert_data_dir, 'dev')
   _train_path = os.path.join(FLAGS.bert_data_dir, 'train')
@@ -240,14 +239,33 @@ def main(_):
       is_training=True,
       mode='eval')
 
-    print('spec')
     train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn,
                                         max_steps=FLAGS.eval_after_steps)
     eval_spec = tf.estimator.EvalSpec(input_fn=train_dev_fn)
+    #estimator.train(input_fn=)
 
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
   #TODO: predict and write predictions.
+  """
+      Prediction format:
+    {'predictions': [
+      {
+        'example_id': -2226525965842375672,
+        'long_answer': {
+          'start_byte': 62657, 'end_byte': 64776,
+          'start_token': 391, 'end_token': 604
+      },
+        'long_answer_score': 13.5,
+        'short_answers': [
+          {'start_byte': 64206, 'end_byte': 64280,
+           'start_token': 555, 'end_token': 560}, ...],
+        'short_answers_score': 26.4,
+        'yes_no_answer': 'NONE'
+      }, ... ]
+  }
+  """
+
 
   if FLAGS.do_predict:
     raise ValueError("Not implemented..")
