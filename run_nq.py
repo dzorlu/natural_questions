@@ -25,11 +25,6 @@ flags.DEFINE_integer(
     "Determines learning rate bc BERT uses Adam decay optimizer")
 
 flags.DEFINE_string(
-    "eval_after_steps", None,
-    "Number of steps of training before eval."
-    "")
-
-flags.DEFINE_string(
     "bert_data_dir", None,
     "The output directory where the tf records will be written.")
 
@@ -131,20 +126,9 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
     tvars = tf.trainable_variables()
 
-    initialized_variable_names = {}
-    scaffold_fn = None
     if init_checkpoint:
       assignment_map, initialized_variable_names = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
       tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-
-    tf.logging.info("**** Trainable Variables ****")
-    for var in tvars:
-      init_string = ""
-      if var.name in initialized_variable_names:
-        init_string = ", *INIT_FROM_CKPT*"
-      tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-                      init_string)
-
     if mode == tf.estimator.ModeKeys.PREDICT:
       predictions = {
         "input_ids": input_ids,
@@ -182,12 +166,12 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         # # TODO: Precision / recall / accuracy
         start_ix = tf.argmax(start_logits, axis=-1)
         end_ix = tf.argmax(end_logits, axis=-1)
-        y_pred = tf.concat([start_ix, end_ix], concat=-1)
+        y_pred = tf.concat([start_ix, end_ix], axis=-1)
         y_true = tf.concat([start_positions, end_positions], axis=-1)
-        acc = tf.reduce_all(math_ops.equal(y_true, y_pred), axis=-1), K.floatx()
+        acc = tf.reduce_all(math_ops.equal(y_true, y_pred), axis=-1)
         return tf.estimator.EstimatorSpec(mode,
                                           loss=total_loss,
-                                          eval_metric_ops=[acc])
+                                          eval_metric_ops={'acc':acc})
     return tf.estimator.EstimatorSpec(mode, loss=total_loss)
   return model_fn
 
@@ -202,7 +186,7 @@ def main(_):
   _train_path = os.path.join(FLAGS.bert_data_dir, 'train')
 
   config = tf.estimator.RunConfig(
-      save_checkpoints_steps=100,
+      save_checkpoints_steps=1000,
       save_summary_steps=50,
       keep_checkpoint_max=2,
       model_dir=FLAGS.output_dir
@@ -222,12 +206,13 @@ def main(_):
   estimator = tf.estimator.Estimator(
       model_fn=model_fn,
       config=config,
-      params={'batch_size': 1})
+      params={'batch_size': FLAGS.train_batch_size})
 
   if FLAGS.do_train:
     train_files = [os.path.join(_train_path, _file) for _file in os.listdir(_train_path) if _file.endswith(".tf_record")]
     dev_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".tf_record")]
-    print(train_files)
+    tf.logging.info("{} files found for training".format(len(train_files)))
+    tf.logging.info("{} files found for dev".format(len(dev_files)))
     train_input_fn = input_fn_builder(
       input_files=train_files,
       seq_length=FLAGS.max_seq_length,
@@ -239,11 +224,8 @@ def main(_):
       is_training=True,
       mode='eval')
 
-    train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn,
-                                        max_steps=FLAGS.eval_after_steps)
+    train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn)
     eval_spec = tf.estimator.EvalSpec(input_fn=train_dev_fn)
-    #estimator.train(input_fn=)
-
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
   #TODO: predict and write predictions.
@@ -271,6 +253,7 @@ def main(_):
     raise ValueError("Not implemented..")
 
 if __name__ == "__main__":
+  tf.logging.info(FLAGS)
   # flags.mark_flag_as_required("vocab_file")
   # flags.mark_flag_as_required("bert_config_file")
   # flags.mark_flag_as_required("output_dir")

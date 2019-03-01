@@ -43,22 +43,7 @@ class FeatureWriter(object):
     """
     Write a InputFeature to the TFRecordWriter as a tf.train.Example.
     
-    Prediction format:
-    {'predictions': [
-      {
-        'example_id': -2226525965842375672,
-        'long_answer': {
-          'start_byte': 62657, 'end_byte': 64776,
-          'start_token': 391, 'end_token': 604
-      },
-        'long_answer_score': 13.5,
-        'short_answers': [
-          {'start_byte': 64206, 'end_byte': 64280,
-           'start_token': 555, 'end_token': 560}, ...],
-        'short_answers_score': 26.4,
-        'yes_no_answer': 'NONE'
-      }, ... ]
-  }
+
   
     """
     self.num_features += 1
