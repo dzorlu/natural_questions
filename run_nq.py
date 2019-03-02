@@ -7,8 +7,7 @@ from __future__ import print_function
 
 import os
 import tensorflow as tf
-from tensorflow.keras import metrics
-from tensorflow.python.keras import backend as K
+from tensorflow import metrics
 from tensorflow.python.ops import math_ops
 
 from bert import modeling
@@ -102,11 +101,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
   def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
     """The `model_fn` for Estimator."""
-
-    tf.logging.info("*** Features ***")
-    for name in sorted(features.keys()):
-      tf.logging.info("  name = %s, shape = %s" % (name, features[name].shape))
-
     input_ids = features["input_ids"]
     input_mask = features["input_mask"]
     segment_ids = features["segment_ids"]
@@ -130,10 +124,36 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       assignment_map, initialized_variable_names = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
       tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
     if mode == tf.estimator.ModeKeys.PREDICT:
+      """
+        Prediction format:
+          {'predictions': [
+            {
+              'example_id': -2226525965842375672,
+              'long_answer': {
+                'start_byte': 62657, 'end_byte': 64776,
+                'start_token': 391, 'end_token': 604
+            },
+              'long_answer_score': 13.5,
+              'short_answers': [
+                {'start_byte': 64206, 'end_byte': 64280,
+                 'start_token': 555, 'end_token': 560}, ...],
+              'short_answers_score': 26.4,
+              'yes_no_answer': 'NONE'
+            }, ... ]
+        }
+      """
+
+      # TODO: This needs to argmax on two dims.
+      start_ix = tf.argmax(start_logits, axis=-1) # [batch_size]
+      end_ix = tf.argmax(end_logits, axis=-1)  # [batch_size]
+      start_bytes_ix = tf.batch_gather(start_bytes, start_ix)
+      end_bytes_ix = tf.batch_gather(end_bytes, end_ix)
+
+
       predictions = {
         "input_ids": input_ids,
-        "start_logits": start_logits,
-        "end_logits": end_logits,
+        "start_bytes_ix": start_bytes_ix,
+        "end_bytes_ix": end_bytes_ix,
       }
       output_spec = tf.estimator.EstimatorSpec(
         mode=mode, predictions=predictions)
@@ -150,10 +170,11 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     start_positions = features["start_positions"] #[batch_size]
     end_positions = features["end_positions"] #[batch_size]
 
+    # loss function
     start_loss = compute_loss(start_logits, start_positions)
     end_loss = compute_loss(end_logits, end_positions)
-
     total_loss = (start_loss + end_loss) / 2.0
+
     if mode == tf.estimator.ModeKeys.TRAIN:
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
@@ -162,16 +183,38 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
           loss=total_loss,
           train_op=train_op)
       return output_spec
+
     if mode == tf.estimator.ModeKeys.EVAL:
-        # # TODO: Precision / recall / accuracy
-        start_ix = tf.argmax(start_logits, axis=-1)
-        end_ix = tf.argmax(end_logits, axis=-1)
-        y_pred = tf.concat([start_ix, end_ix], axis=-1)
-        y_true = tf.concat([start_positions, end_positions], axis=-1)
-        acc = tf.reduce_all(math_ops.equal(y_true, y_pred), axis=-1)
+        # # TODO: Precision / recall
+        def span_accuracy(start_logits, end_logits, start_positions, end_positions):
+            """
+            Exact span match.
+                pred -> [10,20] gt -> [10,20] : True
+                pred -> [10,20] gt -> [10,15] : False
+            :param start_logits: 
+            :param end_logits: 
+            :param start_positions: 
+            :param end_positions: 
+            :return:   
+                accuracy: A `Tensor` representing the accuracy, the value of `total` divided
+                  by `count`.
+                update_op: An operation that increments the `total` and `count` variables
+                  appropriately and whose value matches `accuracy`.
+            """
+            start_ix = tf.argmax(start_logits, axis=-1)
+            end_ix = tf.argmax(end_logits, axis=-1)
+            y_pred = tf.concat([start_ix, end_ix], axis=-1) #[batch_size, 2]
+            y_true = tf.concat([start_positions, end_positions], axis=-1) #[batch_size, 2]
+            acc = tf.reduce_all(math_ops.equal(y_true, y_pred), axis=-1)
+            is_correct = math_ops.to_float(acc)
+            return metrics.mean(is_correct)
+
+        sa = span_accuracy(start_logits, end_logits, start_positions, end_positions)
+        # add it to tensorboard
+        tf.summary.scalar('accuracy', sa[1])
         return tf.estimator.EstimatorSpec(mode,
                                           loss=total_loss,
-                                          eval_metric_ops={'acc':acc})
+                                          eval_metric_ops={'span_accuracy': sa})
     return tf.estimator.EstimatorSpec(mode, loss=total_loss)
   return model_fn
 
@@ -230,26 +273,6 @@ def main(_):
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
   #TODO: predict and write predictions.
-  """
-      Prediction format:
-    {'predictions': [
-      {
-        'example_id': -2226525965842375672,
-        'long_answer': {
-          'start_byte': 62657, 'end_byte': 64776,
-          'start_token': 391, 'end_token': 604
-      },
-        'long_answer_score': 13.5,
-        'short_answers': [
-          {'start_byte': 64206, 'end_byte': 64280,
-           'start_token': 555, 'end_token': 560}, ...],
-        'short_answers_score': 26.4,
-        'yes_no_answer': 'NONE'
-      }, ... ]
-  }
-  """
-
-
   if FLAGS.do_predict:
     raise ValueError("Not implemented..")
 
