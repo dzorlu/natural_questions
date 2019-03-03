@@ -19,9 +19,9 @@ flags = tf.flags
 FLAGS = flags.FLAGS
 
 flags.DEFINE_integer(
-    "num_train_steps", None,
-    "Number of examples extracted. "
-    "Determines learning rate bc BERT uses Adam decay optimizer")
+    "eval_steps", 1000,
+    "Number of evaluation steps "
+    "Number of evaluation steps")
 
 flags.DEFINE_string(
     "bert_data_dir", None,
@@ -29,30 +29,6 @@ flags.DEFINE_string(
 
 
 NB_EPOCHS = 1
-
-#
-# class SpanCategoricalAccuracy(metrics.MeanMetricWrapper):
-#   """Calculates how often span predictions match the ground truth spans.
-#
-#   This metric creates two local variables, `total` and `count` that are used to
-#   compute the frequency with which `y_pred` matches `y_true`. This frequency is
-#   ultimately returned as `sparse categorical accuracy`: an idempotent operation
-#   that simply divides `total` by `count`.
-#
-#   If `sample_weight` is `None`, weights default to 1.
-#   Use `sample_weight` of 0 to mask values.
-#   """
-#
-#   def __init__(self, name='span_categorical_accuracy', dtype=None):
-#     super(SpanCategoricalAccuracy, self).__init__(
-#         span_categorical_accuracy, name, dtype=dtype)
-#
-#
-# def span_categorical_accuracy(y_true, y_pred):
-#   return math_ops.cast(
-#       tf.reduce_all(math_ops.equal(y_true, y_pred), axis=-1),
-#       K.floatx())
-
 
 def input_fn_builder(input_files, seq_length, is_training, mode):
   """Creates an `input_fn` closure to be passed to Estimator."""
@@ -81,9 +57,10 @@ def input_fn_builder(input_files, seq_length, is_training, mode):
     dt = tf.data.TFRecordDataset(input_files)
     dt = dt.map(_decode_record, num_parallel_calls=10)
     if is_training:
+      # shuffles for eval
+      dt = dt.shuffle(buffer_size=100)
       if mode == tf.estimator.ModeKeys.TRAIN:
         # do not shuffle and repeat if eval.
-        dt = dt.shuffle(buffer_size=100)
         dt = dt.repeat(NB_EPOCHS)
     dt = dt.batch(batch_size)
     return dt
@@ -175,6 +152,20 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     end_loss = compute_loss(end_logits, end_positions)
     total_loss = (start_loss + end_loss) / 2.0
 
+    def argmax_2d(start_l, end_l):
+      """
+      argmax over start and end logits
+      :param start_l:
+      :param end_l:
+      :return:
+      """
+      start_l = tf.expand_dims(start_l, 1)
+      end_l = tf.expand_dims(end_l, -1)
+      logits = start_l * end_l
+      flat_logits = tf.reshape(logits, shape=[tf.shape(logits)[0], -1])
+      _argmax = tf.cast(tf.argmax(flat_logits, axis=-1), dtype=tf.int32)
+      return _argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]
+
     if mode == tf.estimator.ModeKeys.TRAIN:
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
@@ -201,8 +192,8 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                 update_op: An operation that increments the `total` and `count` variables
                   appropriately and whose value matches `accuracy`.
             """
-            start_ix = tf.argmax(start_logits, axis=-1)
-            end_ix = tf.argmax(end_logits, axis=-1)
+
+            start_ix, end_ix = argmax_2d(start_logits, end_logits)
             y_pred = tf.concat([start_ix, end_ix], axis=-1) #[batch_size, 2]
             y_true = tf.concat([start_positions, end_positions], axis=-1) #[batch_size, 2]
             acc = tf.reduce_all(math_ops.equal(y_true, y_pred), axis=-1)
@@ -229,9 +220,9 @@ def main(_):
   _train_path = os.path.join(FLAGS.bert_data_dir, 'train')
 
   config = tf.estimator.RunConfig(
-      save_checkpoints_steps=1000,
+      save_checkpoints_steps=FLAGS.save_checkpoints_steps, # this also sets when eval starts
       save_summary_steps=50,
-      keep_checkpoint_max=2,
+      keep_checkpoint_max=10, #train_and_eval does not save the best models, but the most recent ones.
       model_dir=FLAGS.output_dir
   )
 
@@ -269,7 +260,7 @@ def main(_):
 
     train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn)
     # add back steps for eval after fix
-    eval_spec = tf.estimator.EvalSpec(input_fn=train_dev_fn)
+    eval_spec = tf.estimator.EvalSpec(input_fn=train_dev_fn,steps=FLAGS.eval_steps)
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
   #TODO: predict and write predictions.
