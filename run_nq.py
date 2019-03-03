@@ -27,6 +27,12 @@ flags.DEFINE_string(
     "bert_data_dir", None,
     "The output directory where the tf records will be written.")
 
+flags.DEFINE_integer(
+    "num_train_steps", 100000,
+    "Number of total training steps "
+    "Number of total training steps")
+
+
 
 NB_EPOCHS = 1
 
@@ -164,7 +170,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       logits = start_l * end_l
       flat_logits = tf.reshape(logits, shape=[tf.shape(logits)[0], -1])
       _argmax = tf.cast(tf.argmax(flat_logits, axis=-1), dtype=tf.int32)
-      return _argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]
+      return tf.cast(tf.stack([_argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]], axis=-1), dtype=tf.int64)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
       train_op = optimization.create_optimizer(
@@ -182,10 +188,10 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             Exact span match.
                 pred -> [10,20] gt -> [10,20] : True
                 pred -> [10,20] gt -> [10,15] : False
-            :param start_logits: 
-            :param end_logits: 
-            :param start_positions: 
-            :param end_positions: 
+            :param start_logits: [batch_size, seq_lenght]
+            :param end_logits: [batch_size, seq_lenght]
+            :param start_positions: [batch_size]
+            :param end_positions: [batch_size]
             :return:   
                 accuracy: A `Tensor` representing the accuracy, the value of `total` divided
                   by `count`.
@@ -193,10 +199,11 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                   appropriately and whose value matches `accuracy`.
             """
 
-            start_ix, end_ix = argmax_2d(start_logits, end_logits)
-            y_pred = tf.concat([start_ix, end_ix], axis=-1) #[batch_size, 2]
-            y_true = tf.concat([start_positions, end_positions], axis=-1) #[batch_size, 2]
-            acc = tf.reduce_all(math_ops.equal(y_true, y_pred), axis=-1)
+            y_pred_ix = argmax_2d(start_logits, end_logits)
+            start_positions = tf.expand_dims(start_positions, axis=-1)
+            end_positions = tf.expand_dims(end_positions, axis=-1)
+            y_true_ix = tf.concat([start_positions, end_positions], axis=-1) #[batch_size, 2]
+            acc = tf.reduce_all(math_ops.equal(y_true_ix, y_pred_ix), axis=-1)
             is_correct = math_ops.to_float(acc)
             return metrics.mean(is_correct)
 
@@ -258,8 +265,8 @@ def main(_):
       is_training=True,
       mode='eval')
 
-    train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn)
-    # add back steps for eval after fix
+    train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps)
+    # The evaluate will happen after every checkpoint (save_checkpoints_steps)
     eval_spec = tf.estimator.EvalSpec(input_fn=train_dev_fn,steps=FLAGS.eval_steps)
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 

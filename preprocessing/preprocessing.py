@@ -143,6 +143,7 @@ def create_tokenizer_from_hub_module():
 def convert_example(example,
                     tokenizer,
                     max_seq_length,
+                    doc_stride,
                     max_query_length=None,
                     is_training=True,
                     downsample_null_instances=True,
@@ -229,7 +230,7 @@ def convert_example(example,
             doc_spans.append(_DocSpan(start=start_offset, length=length))
             if start_offset + length == len(_all_doc_tokens):
                 break
-            start_offset += length
+            start_offset += min(length, doc_stride)
         return doc_spans
 
     doc_spans = _compute_nb_spans(all_doc_tokens)
@@ -320,7 +321,7 @@ def convert_example(example,
               continue
             answer_id = 2
             # no answer
-            targets = (_cls_id, _cls_id)
+            targets = (0, 0)
           if targets:
             feature = InputFeatures(example_id=example.get('example_id'),
                                     input_ids=input_ids,
@@ -360,6 +361,7 @@ def main(_):
                             tokenizer=tokenizer,
                             is_training=is_training,
                             max_seq_length=FLAGS.max_seq_length,
+                            doc_stride=FLAGS.doc_stride,
                             max_query_length=FLAGS.max_seq_length,
                             train_writer=train_writer.process_feature)
 
