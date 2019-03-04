@@ -13,7 +13,7 @@ BERT_MODEL_HUB = "https://tfhub.dev/google/bert_uncased_L-12_H-768_A-12/1"
 CLS = "[CLS]"
 SEP = "[SEP]"
 
-DOWNSAMPLE = 50
+DOWNSAMPLE = 100
 
 
 flags = tf.flags
@@ -28,6 +28,10 @@ flags.DEFINE_string(
 flags.DEFINE_integer(
     "max_seq_length", None,
     "max length")
+
+flags.DEFINE_integer(
+    "doc_stride", None,
+    "doc_stride")
 
 
 class FeatureWriter(object):
@@ -305,7 +309,6 @@ def convert_example(example,
             try:
               s = s_ix.min() - doc_span.start + total_offset - 1
               e = e_ix.max() - doc_span.start + total_offset - 1
-              tf.logging.info((s, e))
             except:
               tf.logging.info('error encountered..')
               continue
@@ -323,6 +326,7 @@ def convert_example(example,
             # no answer
             targets = (0, 0)
           if targets:
+            tf.logging.info(targets)
             feature = InputFeatures(example_id=example.get('example_id'),
                                     input_ids=input_ids,
                                     input_mask=input_mask,
