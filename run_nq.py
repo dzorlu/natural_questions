@@ -34,7 +34,7 @@ flags.DEFINE_integer(
 
 
 
-NB_EPOCHS = 1
+NB_EPOCHS = 10000
 
 def input_fn_builder(input_files, seq_length, is_training, mode):
   """Creates an `input_fn` closure to be passed to Estimator."""
@@ -97,15 +97,24 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         bert_config=bert_config,
         is_training=is_training,
         input_ids=input_ids,
-        input_mask=input_mask,
+        input_mask=None,
         segment_ids=segment_ids,
         use_one_hot_embeddings=use_one_hot_embeddings)
 
     tvars = tf.trainable_variables()
 
+    initialized_variable_names = {}
     if init_checkpoint:
       assignment_map, initialized_variable_names = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
       tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+
+    tf.logging.info("**** Trainable Variables ****")
+    for var in tvars:
+      init_string = ""
+      if var.name in initialized_variable_names:
+        init_string = ", *INIT_FROM_CKPT*"
+      tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
+                      init_string)
     if mode == tf.estimator.ModeKeys.PREDICT:
       """
         Prediction format:
@@ -149,7 +158,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         loss = -tf.reduce_mean(
             tf.reduce_sum(one_hot_positions * log_probs, axis=-1))
         return loss
-
+    # labels
     start_positions = features["start_positions"] #[batch_size]
     end_positions = features["end_positions"] #[batch_size]
 
@@ -174,7 +183,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
     if mode == tf.estimator.ModeKeys.TRAIN:
       train_op = optimization.create_optimizer(
-          total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
+          total_loss, learning_rate, num_train_steps, num_warmup_steps, False)
       output_spec = tf.estimator.EstimatorSpec(
           mode=mode,
           loss=total_loss,
@@ -233,16 +242,17 @@ def main(_):
       model_dir=FLAGS.output_dir
   )
 
-  num_warmup_steps = int(FLAGS.num_train_steps * 0.01)
+  #num_warmup_steps = int(FLAGS.num_train_steps * 0.01)
+  #tf.logging.info("nb training steps: {}".format(num_warmup_steps))
   # log p(t|c) not included for the squad training setup.
   model_fn = model_fn_builder(
       bert_config=bert_config,
       init_checkpoint=FLAGS.init_checkpoint,
       learning_rate=FLAGS.learning_rate,
       num_train_steps=FLAGS.num_train_steps,
-      num_warmup_steps=num_warmup_steps,
-      use_tpu=FLAGS.use_tpu,
-      use_one_hot_embeddings=FLAGS.use_tpu)
+      num_warmup_steps=0,
+      use_tpu=False,
+      use_one_hot_embeddings=False)
 
   estimator = tf.estimator.Estimator(
       model_fn=model_fn,

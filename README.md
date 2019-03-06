@@ -20,7 +20,7 @@ the auxiliary loss for the answer type, corresponding to the labels “short”,
 ## preprocessing
 Preprocessing script generates all possible instances of the context for a given training example with a sliding window approach,
 appended to the question tokens and special characters. Because the instances for which an answer is
-present is very sparse, the script downsamples all null instances with a ratio of 50:1. 
+present is very sparse, the script downsamples all null instances with a ratio of 100:1. 
 
 If a short answer is present within a span, the indices point to the smllest span containing all annotated short answer spans.
 If only a long answer is present, indices point to the span of the long answer. If neither is found, indices
@@ -46,3 +46,6 @@ python preprocessing/preprocessing.py \
 
 ## Fine-tuning
 Fine tuning extends the [BERT library](https://github.com/google-research/bert) 
+
+
+added eval module argmax over 2d for eval and predictions
