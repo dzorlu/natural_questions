@@ -74,6 +74,22 @@ def input_fn_builder(input_files, seq_length, is_training, mode):
   return input_fn
 
 
+def argmax_2d(start_l, end_l):
+    """
+    argmax over start and end logits
+    :param start_l:
+    :param end_l:
+    :return: score, [batch_size, 2]
+    """
+    start_l = tf.expand_dims(start_l, 1)
+    end_l = tf.expand_dims(end_l, -1)
+    logits = start_l * end_l
+    flat_logits = tf.reshape(logits, shape=[tf.shape(logits)[0], -1])
+    _argmax = tf.cast(tf.argmax(flat_logits, axis=-1), dtype=tf.int32)
+    ix = tf.cast(tf.stack([_argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]], axis=-1), dtype=tf.int64)
+    return tf.math.max(logits, axis=-1), ix
+
+
 def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                      num_train_steps, num_warmup_steps, use_tpu,
                      use_one_hot_embeddings):
@@ -135,17 +151,17 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         }
       """
 
-      # TODO: This needs to argmax on two dims.
-      start_ix = tf.argmax(start_logits, axis=-1) # [batch_size]
-      end_ix = tf.argmax(end_logits, axis=-1)  # [batch_size]
-      start_bytes_ix = tf.batch_gather(start_bytes, start_ix)
-      end_bytes_ix = tf.batch_gather(end_bytes, end_ix)
-
+      score, y_pred = argmax_2d(start_logits, end_logits) # [batch_size, 2]
+      y_pred_start = tf.cast(tf.one_hot(y_pred[:, 0],depth=tf.shape(start_bytes)[-1]), dtype=tf.float32)
+      y_pred_end = tf.cast(tf.one_hot(y_pred[:, 1], depth=tf.shape(end_bytes)[-1]), dtype=tf.float32)
+      start_byte = tf.reduce_sum(start_bytes * y_pred_start, axis=-1)
+      end_byte = tf.reduce_sum(end_bytes * y_pred_end, axis=-1)
 
       predictions = {
         "input_ids": input_ids,
-        "start_bytes_ix": start_bytes_ix,
-        "end_bytes_ix": end_bytes_ix,
+        "start_byte": start_byte,
+        "end_byte": end_byte,
+        "score": score
       }
       output_spec = tf.estimator.EstimatorSpec(
         mode=mode, predictions=predictions)
@@ -166,20 +182,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     start_loss = compute_loss(start_logits, start_positions)
     end_loss = compute_loss(end_logits, end_positions)
     total_loss = (start_loss + end_loss) / 2.0
-
-    def argmax_2d(start_l, end_l):
-      """
-      argmax over start and end logits
-      :param start_l:
-      :param end_l:
-      :return:
-      """
-      start_l = tf.expand_dims(start_l, 1)
-      end_l = tf.expand_dims(end_l, -1)
-      logits = start_l * end_l
-      flat_logits = tf.reshape(logits, shape=[tf.shape(logits)[0], -1])
-      _argmax = tf.cast(tf.argmax(flat_logits, axis=-1), dtype=tf.int32)
-      return tf.cast(tf.stack([_argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]], axis=-1), dtype=tf.int64)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
       train_op = optimization.create_optimizer(
@@ -208,7 +210,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                   appropriately and whose value matches `accuracy`.
             """
 
-            y_pred_ix = argmax_2d(start_logits, end_logits)
+            y_pred_ix, _ = argmax_2d(start_logits, end_logits)
             start_positions = tf.expand_dims(start_positions, axis=-1)
             end_positions = tf.expand_dims(end_positions, axis=-1)
             y_true_ix = tf.concat([start_positions, end_positions], axis=-1) #[batch_size, 2]
@@ -282,7 +284,7 @@ def main(_):
 
   #TODO: predict and write predictions.
   if FLAGS.do_predict:
-    raise ValueError("Not implemented..")
+    estimator.predict()
 
 if __name__ == "__main__":
   tf.logging.info(FLAGS)
