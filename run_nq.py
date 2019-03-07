@@ -236,6 +236,7 @@ def main(_):
 
   _dev_path = os.path.join(FLAGS.bert_data_dir, 'dev')
   _train_path = os.path.join(FLAGS.bert_data_dir, 'train')
+  _predict_path = os.path.join(FLAGS.bert_data_dir, 'predict')
 
   config = tf.estimator.RunConfig(
       save_checkpoints_steps=FLAGS.save_checkpoints_steps, # this also sets when eval starts
@@ -284,7 +285,18 @@ def main(_):
 
   #TODO: predict and write predictions.
   if FLAGS.do_predict:
-    estimator.predict()
+    predict_files = [os.path.join(_predict_path, _file) for _file in os.listdir(_train_path) if
+                     _file.endswith(".tf_record")]
+    predict_input_fn = input_fn_builder(
+        input_files=predict_files,
+        seq_length=FLAGS.max_seq_length,
+        is_training=False,
+        mode='train')
+    results = []
+    for batch_result in estimator.predict(predict_input_fn):
+        results.extend(batch_result)
+        if len(results) % 1000 == 0:
+            tf.logging.info("Processing example: %d" % (len(results)))
 
 if __name__ == "__main__":
   tf.logging.info(FLAGS)
