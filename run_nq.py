@@ -89,7 +89,7 @@ def argmax_2d(start_l, end_l):
     flat_logits = tf.reshape(logits, shape=[tf.shape(logits)[0], -1])
     _argmax = tf.cast(tf.argmax(flat_logits, axis=-1), dtype=tf.int32)
     ix = tf.cast(tf.stack([_argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]], axis=-1), dtype=tf.int64)
-    return tf.math.max(logits, axis=-1), ix
+    return tf.math.maximum(logits, axis=-1), ix
 
 
 def model_fn_builder(bert_config, init_checkpoint, learning_rate,
