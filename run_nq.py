@@ -9,10 +9,12 @@ import os
 import tensorflow as tf
 from tensorflow import metrics
 from tensorflow.python.ops import math_ops
+from tensorflow.train import AdamOptimizer
 
 from bert import modeling
 from bert.run_squad import create_model
 from bert import optimization
+
 
 flags = tf.flags
 
@@ -101,6 +103,11 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         segment_ids=segment_ids,
         use_one_hot_embeddings=use_one_hot_embeddings)
 
+    start_ix = tf.argmax(start_logits, axis=-1)  # [batch_size]
+    end_ix = tf.argmax(end_logits, axis=-1)  # [batch_size]
+    tf.summary.histogram('start_ix', start_ix)
+    tf.summary.histogram('end_ix', end_ix)
+
     tvars = tf.trainable_variables()
 
     initialized_variable_names = {}
@@ -115,6 +122,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         init_string = ", *INIT_FROM_CKPT*"
       tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
                       init_string)
+      tf.summary.histogram(var.name, var)
     if mode == tf.estimator.ModeKeys.PREDICT:
       """
         Prediction format:
@@ -182,8 +190,17 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       return tf.cast(tf.stack([_argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]], axis=-1), dtype=tf.int64)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-      train_op = optimization.create_optimizer(
-          total_loss, learning_rate, num_train_steps, num_warmup_steps, False)
+      # debugging the optimizer
+      step = tf.train.get_global_step()
+      opt = AdamOptimizer(learning_rate=learning_rate)
+      gradient_variable = opt.compute_gradients(total_loss)
+      for g,v in gradient_variable:
+        if g is not None:
+          tf.summary.histogram("%s-grad" % v.name, g)
+      train_op = opt.apply_gradients(gradient_variable, global_step=step)
+      # debug end
+      # train_op = optimization.create_optimizer(
+      #     total_loss, learning_rate, num_train_steps, num_warmup_steps, False)
       output_spec = tf.estimator.EstimatorSpec(
           mode=mode,
           loss=total_loss,
