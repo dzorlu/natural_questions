@@ -89,7 +89,7 @@ def argmax_2d(start_l, end_l):
     flat_logits = tf.reshape(logits, shape=[tf.shape(logits)[0], -1])
     _argmax = tf.cast(tf.argmax(flat_logits, axis=-1), dtype=tf.int32)
     ix = tf.cast(tf.stack([_argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]], axis=-1), dtype=tf.int64)
-    return tf.keras.backend.max(logits, axis=-1), ix
+    return tf.cast(tf.reduce_max(logits, axis=-1), tf.int64), ix
 
 
 def model_fn_builder(bert_config, init_checkpoint, learning_rate,
@@ -230,7 +230,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                   appropriately and whose value matches `accuracy`.
             """
 
-            y_pred_ix, _ = argmax_2d(start_logits, end_logits)
+            _, y_pred_ix = argmax_2d(start_logits, end_logits)
             start_positions = tf.expand_dims(start_positions, axis=-1)
             end_positions = tf.expand_dims(end_positions, axis=-1)
             y_true_ix = tf.concat([start_positions, end_positions], axis=-1) #[batch_size, 2]
