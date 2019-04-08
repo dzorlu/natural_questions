@@ -46,4 +46,6 @@ python preprocessing/preprocessing.py \
 
 
 ## Fine-tuning
-Fine tuning extends the [BERT library](https://github.com/google-research/bert).
+Fine tuning extends the [BERT library](https://github.com/google-research/bert) and reaches 57% accuracy on the dev set.
+All of the parameters of BERT and the single layer `W` on top that transforms BERT outputs onto span predictions
+ are fine tuned jointly to maximize the log-probability of the correct span.
