@@ -42,6 +42,7 @@ def input_fn_builder(input_files, seq_length, is_training, mode):
   """Creates an `input_fn` closure to be passed to Estimator."""
 
   name_to_features = {
+      "example_id": tf.FixedLenFeature([], tf.int64),
       "input_ids": tf.FixedLenFeature([seq_length], tf.int64),
       "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
       "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
@@ -77,19 +78,53 @@ def input_fn_builder(input_files, seq_length, is_training, mode):
 
 
 def argmax_2d(start_l, end_l):
+    #TODO: Fix the score.
     """
     argmax over start and end logits
-    :param start_l:
-    :param end_l:
+    :param start_l: [ batch_size, seq_length]
+    :param end_l: [ batch_size, seq_length]
     :return: score, [batch_size, 2]
     """
+    # exponentiate to make large negative # -> zero
+    start_l = tf.math.exp(start_l)
+    end_l = tf.math.exp(end_l)
     start_l = tf.expand_dims(start_l, 1)
     end_l = tf.expand_dims(end_l, -1)
+    #TODO: mask end preceeding statt.
     logits = start_l * end_l
     flat_logits = tf.reshape(logits, shape=[tf.shape(logits)[0], -1])
     _argmax = tf.cast(tf.argmax(flat_logits, axis=-1), dtype=tf.int32)
     ix = tf.cast(tf.stack([_argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]], axis=-1), dtype=tf.int64)
     return tf.cast(tf.reduce_max(logits, axis=-1), tf.int64), ix
+
+
+def span_accuracy(start_logits, end_logits, start_positions, end_positions):
+    """
+    Exact span match.
+        pred -> [10,20] gt -> [10,20] : True
+        pred -> [10,20] gt -> [10,15] : False
+    :param start_logits: [batch_size, seq_length]
+    :param end_logits: [batch_size, seq_length]
+    :param start_positions: [batch_size]
+    :param end_positions: [batch_size]
+    :return: a tuple of:
+        accuracy: A `Tensor` representing the accuracy, the value of `total` divided
+          by `count`.
+        update_op: An operation that increments the `total` and `count` variables
+          appropriately and whose value matches `accuracy`.
+    """
+
+    _, y_pred_ix = argmax_2d(start_logits, end_logits)
+    start_positions = tf.expand_dims(start_positions, axis=-1)
+    end_positions = tf.expand_dims(end_positions, axis=-1)
+    y_true_ix = tf.concat([start_positions, end_positions], axis=-1)  # [batch_size, 2]
+    diff = y_true_ix - y_pred_ix
+    # difference between prediction and true_ix for debudding purposes.
+    tf.summary.histogram('start_diff', diff[:, 0])
+    tf.summary.histogram('end_diff', diff[:, 1])
+    acc = tf.reduce_all(math_ops.equal(y_true_ix, y_pred_ix), axis=-1)
+    is_correct = math_ops.to_float(acc)
+    return metrics.mean(is_correct)
 
 
 def model_fn_builder(bert_config, init_checkpoint, learning_rate,
@@ -105,7 +140,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     input_ids = features["input_ids"]
     input_mask = features["input_mask"]
     segment_ids = features["segment_ids"]
-    # convert predictions back to bytes
+    # to convert predictions back to bytes
     start_bytes = features["start_bytes"]
     end_bytes = features["end_bytes"]
 
@@ -160,13 +195,20 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       """
 
       score, y_pred = argmax_2d(start_logits, end_logits) # [batch_size, 2]
-      y_pred_start = tf.cast(tf.one_hot(y_pred[:, 0],depth=tf.shape(start_bytes)[-1]), dtype=tf.float32)
-      y_pred_end = tf.cast(tf.one_hot(y_pred[:, 1], depth=tf.shape(end_bytes)[-1]), dtype=tf.float32)
+      y_pred_start = tf.cast(tf.one_hot(y_pred[:, 0], depth=tf.shape(start_bytes)[-1]), dtype=tf.int64)
+      y_pred_end = tf.cast(tf.one_hot(y_pred[:, 1], depth=tf.shape(end_bytes)[-1]), dtype=tf.int64)
       start_byte = tf.reduce_sum(start_bytes * y_pred_start, axis=-1)
       end_byte = tf.reduce_sum(end_bytes * y_pred_end, axis=-1)
 
       predictions = {
+        "example_id": features["example_id"],
         "input_ids": input_ids,
+        "start_logits": start_logits,
+        "end_logits": end_logits,
+        "y_pred_start": y_pred_start,
+        "y_pred_end": y_pred_end,
+        "start_positions" : features["start_positions"],  # [batch_size]
+        "end_positions" : features["end_positions"], # [batch_size]
         "start_byte": start_byte,
         "end_byte": end_byte,
         "score": score
@@ -186,26 +228,27 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     start_positions = features["start_positions"] #[batch_size]
     end_positions = features["end_positions"] #[batch_size]
 
-    tf.summary.histogram('start_positions', start_positions)
-    tf.summary.histogram('end_positions', end_positions)
-
     # loss function
     start_loss = compute_loss(start_logits, start_positions)
     end_loss = compute_loss(end_logits, end_positions)
     total_loss = (start_loss + end_loss) / 2.0
 
+    sa = span_accuracy(start_logits, end_logits, start_positions, end_positions)
+    # add it to tensorboard
+    tf.summary.scalar('accuracy', sa[1])
+
     if mode == tf.estimator.ModeKeys.TRAIN:
       # debugging the optimizer
-      step = tf.train.get_global_step()
-      opt = AdamOptimizer(learning_rate=learning_rate)
-      gradient_variable = opt.compute_gradients(total_loss)
-      for g,v in gradient_variable:
-        if g is not None:
-          tf.summary.histogram("%s-grad" % v.name, g)
-      train_op = opt.apply_gradients(gradient_variable, global_step=step)
+      # step = tf.train.get_global_step()
+      # opt = AdamOptimizer(learning_rate=learning_rate)
+      # gradient_variable = opt.compute_gradients(total_loss)
+      # for g,v in gradient_variable:
+      #   if g is not None:
+      #     tf.summary.histogram("%s-grad" % v.name, g)
+      # train_op = opt.apply_gradients(gradient_variable, global_step=step)
       # debug end
-      # train_op = optimization.create_optimizer(
-      #     total_loss, learning_rate, num_train_steps, num_warmup_steps, False)
+      train_op = optimization.create_optimizer(
+          total_loss, learning_rate, num_train_steps, num_warmup_steps, False)
       output_spec = tf.estimator.EstimatorSpec(
           mode=mode,
           loss=total_loss,
@@ -214,33 +257,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
     if mode == tf.estimator.ModeKeys.EVAL:
         # # TODO: Precision / recall
-        def span_accuracy(start_logits, end_logits, start_positions, end_positions):
-            """
-            Exact span match.
-                pred -> [10,20] gt -> [10,20] : True
-                pred -> [10,20] gt -> [10,15] : False
-            :param start_logits: [batch_size, seq_lenght]
-            :param end_logits: [batch_size, seq_lenght]
-            :param start_positions: [batch_size]
-            :param end_positions: [batch_size]
-            :return:   
-                accuracy: A `Tensor` representing the accuracy, the value of `total` divided
-                  by `count`.
-                update_op: An operation that increments the `total` and `count` variables
-                  appropriately and whose value matches `accuracy`.
-            """
 
-            _, y_pred_ix = argmax_2d(start_logits, end_logits)
-            start_positions = tf.expand_dims(start_positions, axis=-1)
-            end_positions = tf.expand_dims(end_positions, axis=-1)
-            y_true_ix = tf.concat([start_positions, end_positions], axis=-1) #[batch_size, 2]
-            acc = tf.reduce_all(math_ops.equal(y_true_ix, y_pred_ix), axis=-1)
-            is_correct = math_ops.to_float(acc)
-            return metrics.mean(is_correct)
-
-        sa = span_accuracy(start_logits, end_logits, start_positions, end_positions)
-        # add it to tensorboard
-        tf.summary.scalar('accuracy', sa[1])
         return tf.estimator.EstimatorSpec(mode,
                                           loss=total_loss,
                                           eval_metric_ops={'span_accuracy': sa})
@@ -311,7 +328,7 @@ def main(_):
         input_files=predict_files,
         seq_length=FLAGS.max_seq_length,
         is_training=False,
-        mode='train')
+        mode='predict')
     results = []
     for batch_result in estimator.predict(predict_input_fn):
         results.extend(batch_result)

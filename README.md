@@ -1,8 +1,9 @@
 (WIP)
+
 # Natural Questions
 Google recently introduced the [Natural Questions corpus](https://ai.google/research/pubs/pub47761), 
 a question answering dataset in which questions consist of queries issued to the Google 
-search engine and the answers are annotated in long and short form found in the corresponding Wikipedia 
+search engine and the answersthat  are annotated in long and short form found in the corresponding Wikipedia 
 article. A question can have both short and long answers, only a long answer, a yes/no answer, or no answer at all.
 
 The work attempts to replicate the code and results presented in [A BERT Baseline for the Natural Questions](https://arxiv.org/abs/1901.08634). 
@@ -45,7 +46,4 @@ python preprocessing/preprocessing.py \
 
 
 ## Fine-tuning
-Fine tuning extends the [BERT library](https://github.com/google-research/bert) 
-
-
-added eval module argmax over 2d for eval and predictions
+Fine tuning extends the [BERT library](https://github.com/google-research/bert).
