@@ -344,17 +344,17 @@ def convert_example(example,
             # downsample null instances if specified.
             if np.random.random(1) > 1. / DOWNSAMPLE:
               continue
-            answer_id = [2]
+            answer_ids = [2]
             # no answer
             targets = [(0, 0)]
-          if targets and answer_id:
-            tf.logging.info(zip(answer_ids,targets))
+          if targets and answer_ids:
+            tf.logging.info(list(zip(answer_ids,targets)))
             feature = InputFeatures(example_id=example.get('example_id'),
                                     input_ids=input_ids,
                                     input_mask=input_mask,
                                     segment_ids=segment_ids,
                                     targets=targets,
-                                    answer_id=answer_id,
+                                    answer_id=answer_ids,
                                     start_bytes=start_bytes_span,
                                     end_bytes=end_bytes_span,
                                     tokens=tokens)
