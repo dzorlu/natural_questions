@@ -25,15 +25,20 @@ present is very sparse, the script downsamples all null instances with a ratio o
 
 If a short answer is present within a span, the indices point to the smllest span containing all annotated short answer spans.
 If only a long answer is present, indices point to the span of the long answer. If neither is found, indices
-point to the "[CLS]" token. 
+point to the "[CLS]" token.
+
+NQ includes 5-way annotations on 7,830 items for development data. If at least 2 out of 5 annotators have given a non-null answer on the
+example, then the system is required to output a non-null answer that is seen at least once in the 5 annotations;
+conversely if fewer than 2 annotators give a non-null long answer, the system is required to return NULL as its output(1).
+
+Hence, when processing the evaluation dataset, the module discards any span that has less than two target annotations. The annotations, in turn,
+are used at evaluation time whether the model prediction is accurate or not.
 
 There are couple of TODO's:
-
 1- The paper introduces special markup tokens to point the model to tables etc, where answers are most likely to be found
-
 2- Yes/No answers are currently ignored.
 
-train and dev files are expected to live under $BERT_DATA_DIR
+Train and dev files are expected to live under $BERT_DATA_DIR
 
 ```buildoutcfg
 python preprocessing/preprocessing.py \
@@ -64,3 +69,5 @@ All of the parameters of BERT and the single layer `W` on top that transforms BE
     --learning_rate 0.00005 \
     --save_checkpoints_steps 1000
 ```
+
+(1) [Natural Questions: a Benchmark for Question Answering Research](https://storage.googleapis.com/pub-tools-public-publication-data/pdf/b8c26e4347adc3453c15d96a09e6f7f102293f71.pdf)
