@@ -107,6 +107,21 @@ def span_accuracy(predictions, positions, n_way=5):
     is_correct = tf.reduce_any(tf.equal(tf.reduce_sum(_equal, axis=-1), 2), axis=-1)
     return is_correct
 
+def precision_and_recall(accuracy, positions):
+  _equal = tf.cast(math_ops.equal(positions, 0), tf.int64)
+  labels = tf.reduce_any(tf.not_equal(tf.reduce_sum(_equal, axis=-1), 2), -1)
+  tp = tf.reduce_sum(
+      tf.cast(math_ops.logical_and(math_ops.equal(accuracy, True), math_ops.equal(labels, False)), tf.int64))
+  fp = tf.reduce_sum(
+      tf.cast(math_ops.logical_and(math_ops.equal(accuracy, True), math_ops.equal(labels, True)), tf.int64))
+  fn = tf.reduce_sum(
+      tf.cast(math_ops.logical_and(math_ops.equal(accuracy, False), math_ops.equal(labels, True)), tf.int64))
+  precision = tp / (tp + fp)
+  recall = tp / (tp + fn)
+  precision_and_recall_metrics = {'precision': precision,
+                                  'recall': recall}
+  return precision_and_recall_metrics
+
 
 def model_fn_builder(bert_config, init_checkpoint, learning_rate,
                      num_train_steps, num_warmup_steps, use_tpu,
@@ -220,8 +235,10 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     if mode == tf.estimator.ModeKeys.EVAL:
         sa = span_accuracy(start_logits, end_logits, positions)
         _accuracy_ = metrics.mean(sa)
-        # add it to tensorboard
-        tf.summary.scalar('accuracy', _accuracy_[1])
+        # precision / recall
+        precision_and_recall_metrics = precision_and_recall(_accuracy_, positions)
+        precision_op = metrics.mean(precision_and_recall_metrics['precision'])
+        recall_op = metrics.mean(precision_and_recall_metrics['recall'])
         # this takes the first annotation, which might not be the best way to handle this
         _positions = positions[:, 0, :]
         # loss function
@@ -230,7 +247,9 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         total_loss = (start_loss + end_loss) / 2.0
         return tf.estimator.EstimatorSpec(mode,
                                           loss=total_loss,
-                                          eval_metric_ops={'span_accuracy': sa})
+                                          eval_metric_ops={'span_accuracy': sa,
+                                                           'precision': precision_op,
+                                                           'recall': recall_op})
   return model_fn
 
 
