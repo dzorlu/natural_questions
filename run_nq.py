@@ -9,7 +9,6 @@ import os
 import tensorflow as tf
 from tensorflow import metrics
 from tensorflow.python.ops import math_ops
-from tensorflow.train import AdamOptimizer
 
 from bert import modeling
 from bert.run_squad import create_model
@@ -38,7 +37,7 @@ flags.DEFINE_integer(
 
 NB_EPOCHS = 10000
 
-def input_fn_builder(input_files, seq_length, is_training, mode):
+def input_fn_builder(input_files, seq_length, mode):
   """Creates an `input_fn` closure to be passed to Estimator."""
 
   name_to_features = {
@@ -49,9 +48,8 @@ def input_fn_builder(input_files, seq_length, is_training, mode):
       "start_bytes": tf.FixedLenFeature([seq_length], tf.int64),
       "end_bytes": tf.FixedLenFeature([seq_length], tf.int64),
   }
-  if is_training:
-    name_to_features["start_positions"] = tf.FixedLenFeature([], tf.int64)
-    name_to_features["end_positions"] = tf.FixedLenFeature([], tf.int64)
+  if mode in ['train', 'eval']:
+    name_to_features["positions"] = tf.FixedLenFeature([], tf.int64)
 
   def _decode_record(record):
     """Decodes a record to a TensorFlow example."""
@@ -65,12 +63,10 @@ def input_fn_builder(input_files, seq_length, is_training, mode):
     # For eval, we want no shuffling and parallel reading doesn't matter.
     dt = tf.data.TFRecordDataset(input_files)
     dt = dt.map(_decode_record, num_parallel_calls=10)
-    if is_training:
-      # shuffles for eval
+    if mode is not tf.estimator.ModeKeys.PREDICT:
       dt = dt.shuffle(buffer_size=100)
-      if mode == tf.estimator.ModeKeys.TRAIN:
-        # do not shuffle and repeat if eval.
-        dt = dt.repeat(NB_EPOCHS)
+    if mode == tf.estimator.ModeKeys.TRAIN:
+      dt = dt.repeat(NB_EPOCHS)
     dt = dt.batch(batch_size)
     return dt
 
@@ -78,53 +74,38 @@ def input_fn_builder(input_files, seq_length, is_training, mode):
 
 
 def argmax_2d(start_l, end_l):
-    #TODO: Fix the score.
     """
     argmax over start and end logits
     :param start_l: [ batch_size, seq_length]
     :param end_l: [ batch_size, seq_length]
-    :return: score, [batch_size, 2]
+    :return: score, ix [batch_size, 2]
     """
     # exponentiate to make large negative # -> zero
     start_l = tf.math.exp(start_l)
     end_l = tf.math.exp(end_l)
     start_l = tf.expand_dims(start_l, 1)
     end_l = tf.expand_dims(end_l, -1)
-    #TODO: mask end preceeding statt.
     logits = start_l * end_l
+    # mask upper triangle.
+    logits = tf.linalg.LinearOperatorLowerTriangular(logits).to_dense()
     flat_logits = tf.reshape(logits, shape=[tf.shape(logits)[0], -1])
     _argmax = tf.cast(tf.argmax(flat_logits, axis=-1), dtype=tf.int32)
     ix = tf.cast(tf.stack([_argmax % tf.shape(logits)[1], _argmax // tf.shape(logits)[2]], axis=-1), dtype=tf.int64)
-    return tf.cast(tf.reduce_max(logits, axis=-1), tf.int64), ix
+    return tf.cast(tf.reduce_max(flat_logits, axis=-1), tf.int64), ix
 
 
-def span_accuracy(start_logits, end_logits, start_positions, end_positions):
+def span_accuracy(predictions, positions, n_way=5):
     """
     Exact span match.
-        pred -> [10,20] gt -> [10,20] : True
-        pred -> [10,20] gt -> [10,15] : False
-    :param start_logits: [batch_size, seq_length]
-    :param end_logits: [batch_size, seq_length]
-    :param start_positions: [batch_size]
-    :param end_positions: [batch_size]
-    :return: a tuple of:
-        accuracy: A `Tensor` representing the accuracy, the value of `total` divided
-          by `count`.
-        update_op: An operation that increments the `total` and `count` variables
-          appropriately and whose value matches `accuracy`.
+    :param predictions: [batch_size, 2]
+    :param positions: [batch_size, 5, 2]
+    :return: [batch_size]
     """
 
-    _, y_pred_ix = argmax_2d(start_logits, end_logits)
-    start_positions = tf.expand_dims(start_positions, axis=-1)
-    end_positions = tf.expand_dims(end_positions, axis=-1)
-    y_true_ix = tf.concat([start_positions, end_positions], axis=-1)  # [batch_size, 2]
-    diff = y_true_ix - y_pred_ix
-    # difference between prediction and true_ix for debudding purposes.
-    tf.summary.histogram('start_diff', diff[:, 0])
-    tf.summary.histogram('end_diff', diff[:, 1])
-    acc = tf.reduce_all(math_ops.equal(y_true_ix, y_pred_ix), axis=-1)
-    is_correct = math_ops.to_float(acc)
-    return metrics.mean(is_correct)
+    predictions = tf.stack(n_way * [predictions], axis=1)
+    _equal = tf.cast(math_ops.equal(predictions, positions), tf.int64)
+    is_correct = tf.reduce_any(tf.equal(tf.reduce_sum(_equal, axis=-1), 2), axis=-1)
+    return is_correct
 
 
 def model_fn_builder(bert_config, init_checkpoint, learning_rate,
@@ -174,6 +155,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
                       init_string)
       tf.summary.histogram(var.name, var)
+    score, y_pred = argmax_2d(start_logits, end_logits)
     if mode == tf.estimator.ModeKeys.PREDICT:
       """
         Prediction format:
@@ -193,8 +175,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             }, ... ]
         }
       """
-
-      score, y_pred = argmax_2d(start_logits, end_logits) # [batch_size, 2]
       y_pred_start = tf.cast(tf.one_hot(y_pred[:, 0], depth=tf.shape(start_bytes)[-1]), dtype=tf.int64)
       y_pred_end = tf.cast(tf.one_hot(y_pred[:, 1], depth=tf.shape(end_bytes)[-1]), dtype=tf.int64)
       start_byte = tf.reduce_sum(start_bytes * y_pred_start, axis=-1)
@@ -207,8 +187,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         "end_logits": end_logits,
         "y_pred_start": y_pred_start,
         "y_pred_end": y_pred_end,
-        "start_positions" : features["start_positions"],  # [batch_size]
-        "end_positions" : features["end_positions"], # [batch_size]
         "start_byte": start_byte,
         "end_byte": end_byte,
         "score": score
@@ -225,28 +203,12 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
             tf.reduce_sum(one_hot_positions * log_probs, axis=-1))
         return loss
     # labels
-    start_positions = features["start_positions"] #[batch_size]
-    end_positions = features["end_positions"] #[batch_size]
-
-    # loss function
-    start_loss = compute_loss(start_logits, start_positions)
-    end_loss = compute_loss(end_logits, end_positions)
-    total_loss = (start_loss + end_loss) / 2.0
-
-    sa = span_accuracy(start_logits, end_logits, start_positions, end_positions)
-    # add it to tensorboard
-    tf.summary.scalar('accuracy', sa[1])
-
+    positions = features["positions"] #[batch_size, 2] for train or [batch_size, 5, 2] for eval
     if mode == tf.estimator.ModeKeys.TRAIN:
-      # debugging the optimizer
-      # step = tf.train.get_global_step()
-      # opt = AdamOptimizer(learning_rate=learning_rate)
-      # gradient_variable = opt.compute_gradients(total_loss)
-      # for g,v in gradient_variable:
-      #   if g is not None:
-      #     tf.summary.histogram("%s-grad" % v.name, g)
-      # train_op = opt.apply_gradients(gradient_variable, global_step=step)
-      # debug end
+      # loss function
+      start_loss = compute_loss(start_logits, positions[:, 0])
+      end_loss = compute_loss(end_logits, positions[:, 1])
+      total_loss = (start_loss + end_loss) / 2.0
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, False)
       output_spec = tf.estimator.EstimatorSpec(
@@ -256,12 +218,19 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       return output_spec
 
     if mode == tf.estimator.ModeKeys.EVAL:
-        # # TODO: Precision / recall
-
+        sa = span_accuracy(start_logits, end_logits, positions)
+        _accuracy_ = metrics.mean(sa)
+        # add it to tensorboard
+        tf.summary.scalar('accuracy', _accuracy_[1])
+        # this takes the first annotation, which might not be the best way to handle this
+        _positions = positions[:, 0, :]
+        # loss function
+        start_loss = compute_loss(start_logits, _positions[:, 0])
+        end_loss = compute_loss(end_logits, _positions[:, 1])
+        total_loss = (start_loss + end_loss) / 2.0
         return tf.estimator.EstimatorSpec(mode,
                                           loss=total_loss,
                                           eval_metric_ops={'span_accuracy': sa})
-    return tf.estimator.EstimatorSpec(mode, loss=total_loss)
   return model_fn
 
 
@@ -307,12 +276,10 @@ def main(_):
     train_input_fn = input_fn_builder(
       input_files=train_files,
       seq_length=FLAGS.max_seq_length,
-      is_training=True,
       mode='train')
     train_dev_fn = input_fn_builder(
       input_files=dev_files,
       seq_length=FLAGS.max_seq_length,
-      is_training=True,
       mode='eval')
 
     train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps)
@@ -327,7 +294,6 @@ def main(_):
     predict_input_fn = input_fn_builder(
         input_files=predict_files,
         seq_length=FLAGS.max_seq_length,
-        is_training=False,
         mode='predict')
     results = []
     for batch_result in estimator.predict(predict_input_fn):

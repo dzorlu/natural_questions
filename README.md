@@ -34,9 +34,9 @@ conversely if fewer than 2 annotators give a non-null long answer, the system is
 Hence, when processing the evaluation dataset, the module discards any span that has less than two target annotations. The annotations, in turn,
 are used at evaluation time whether the model prediction is accurate or not.
 
-There are couple of TODO's:
-1- The paper introduces special markup tokens to point the model to tables etc, where answers are most likely to be found
-2- Yes/No answers are currently ignored.
+
+The baseline paper introduces special markup tokens to point the model to tables etc,
+where answers are most likely to be found. I have not implemented this yet. Yes/No answers are not taken into consideration either.
 
 Train and dev files are expected to live under $BERT_DATA_DIR
 

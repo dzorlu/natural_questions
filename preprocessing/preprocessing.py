@@ -68,14 +68,8 @@ class FeatureWriter(object):
     features["start_bytes"] = create_int_feature(feature.start_bytes)
     features["end_bytes"] = create_int_feature(feature.end_bytes)
 
-    if self.mode == 'train':
-      features["start_positions"] = create_int_feature([feature.targets[0]])
-      features["end_positions"] = create_int_feature([feature.targets[1]])
-      features['answer_id'] = create_int_feature(feature.answer_id)
-    elif self.mode == 'eval':
-      # this is N-way.
-      features["start_positions"] = create_int_feature([t[0] for t in feature.targets])
-      features["end_positions"] = create_int_feature([t[1] for t in feature.targets])
+    if self.mode == 'train' or 'eval':
+      features["positions"] = create_int_feature(feature.targets)
       features['answer_id'] = create_int_feature(feature.answer_id)
 
     tf_example = tf.train.Example(features=tf.train.Features(feature=features))
@@ -338,15 +332,23 @@ def convert_example(example,
                 targets.append((s, e))
                 answer_ids.append(answer_id)
           # for eval, if less than 2 annotations are found, discard.
-          if mode == 'eval' and len(targets) < BETA:
+          if mode == 'eval':
+            if len(targets) < BETA:
               targets = []
+
           if downsample_null_instances and not targets:
             # downsample null instances if specified.
             if np.random.random(1) > 1. / DOWNSAMPLE:
               continue
-            answer_ids = [2]
+            _len = 5 if mode == 'eval' else 1
+            answer_ids = _len * [2]
             # no answer
-            targets = [(0, 0)]
+            targets = _len *  [(0, 0)]
+          # pad eval targets
+          if mode == 'eval' and len(targets) >= BETA:
+            while len(targets) < 5:
+              targets.append((-1, -1))
+              answer_ids.append(-1)
           if targets and answer_ids:
             tf.logging.info(list(zip(answer_ids,targets)))
             feature = InputFeatures(example_id=example.get('example_id'),
