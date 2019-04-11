@@ -14,6 +14,7 @@ CLS = "[CLS]"
 SEP = "[SEP]"
 
 DOWNSAMPLE = 100
+BETA = 2 #for evalution
 
 
 flags = tf.flags
@@ -37,9 +38,9 @@ flags.DEFINE_integer(
 class FeatureWriter(object):
   """Writes InputFeature to TF example file."""
 
-  def __init__(self, filename, is_training):
+  def __init__(self, filename, mode):
     self.filename = filename
-    self.is_training = is_training
+    self.mode = mode
     self.num_features = 0
     self._writer = tf.python_io.TFRecordWriter(filename)
 
@@ -67,10 +68,15 @@ class FeatureWriter(object):
     features["start_bytes"] = create_int_feature(feature.start_bytes)
     features["end_bytes"] = create_int_feature(feature.end_bytes)
 
-    if self.is_training:
+    if self.mode == 'train':
       features["start_positions"] = create_int_feature([feature.targets[0]])
       features["end_positions"] = create_int_feature([feature.targets[1]])
-      features['answer_id'] = create_int_feature([feature.answer_id])
+      features['answer_id'] = create_int_feature(feature.answer_id)
+    elif self.mode == 'eval':
+      # this is N-way.
+      features["start_positions"] = create_int_feature([t[0] for t in feature.targets])
+      features["end_positions"] = create_int_feature([t[1] for t in feature.targets])
+      features['answer_id'] = create_int_feature(feature.answer_id)
 
     tf_example = tf.train.Example(features=tf.train.Features(feature=features))
     self._writer.write(tf_example.SerializeToString())
@@ -149,7 +155,7 @@ def convert_example(example,
                     max_seq_length,
                     doc_stride,
                     max_query_length=None,
-                    is_training=True,
+                    mode='train',
                     downsample_null_instances=True,
                     train_writer=None):
     """
@@ -177,26 +183,36 @@ def convert_example(example,
     _TargetByteRange = collections.namedtuple(  # pylint: disable=invalid-name
         "TargetByteRange", ["short_start", "short_end", "long_start", "long_end"])
 
-    if is_training:
-        _cls_id = tokenizer.convert_tokens_to_ids([CLS])[0]
-        _sep_id = tokenizer.convert_tokens_to_ids([SEP])[0]
-        # if all annotated short spans are contained in the instance,
-        # we set the start and end target indices to point to the
-        # smallest span containing all annotated short answer spans
-        annotations = next(iter(example.get('annotations')))
+    def _get_target_byte_range(_annotation):
         # short answers
-        short_answers = annotations.get('short_answers')
+        short_answers = _annotation.get('short_answers')
         short_answer_byte_start_ix, short_answer_byte_end_ix = -1, -1
         if short_answers:
+            # if all annotated short spans are contained in the instance,
+            # we set the start and end target indices to point to the
+            # smallest span containing all annotated short answer spans
             short_answer_byte_start_ix = min([sa.get('start_byte') for sa in short_answers])
             short_answer_byte_end_ix = max([sa.get('end_byte') for sa in short_answers])
         # long answers
-        long_answer = annotations.get('long_answer')
+        long_answer = _annotation.get('long_answer')
         # if no short / long, all ix default to -1.
         target_byte_range = _TargetByteRange(short_start=short_answer_byte_start_ix,
                                              short_end=short_answer_byte_end_ix,
                                              long_start=long_answer.get('start_byte'),
                                              long_end=long_answer.get('end_byte'))
+        return target_byte_range
+
+
+    if mode == 'train':
+        annotation = next(iter(example.get('annotations')))
+        target_byte_ranges = [_get_target_byte_range(annotation)]
+    elif mode == 'eval':
+        # eval data provides 5-way answers.
+        target_byte_ranges = []
+        for annotation in example.get('annotations'):
+            target_byte_ranges.append(_get_target_byte_range(annotation))
+    elif mode == 'predict':
+        raise ValueError("Not implemented")
 
     for (i, token) in enumerate(example.get('document_tokens')):
         _token = token.get('token')
@@ -287,46 +303,52 @@ def convert_example(example,
         assert len(end_bytes_span) == max_seq_length
 
 
-        if is_training:
-          answer_id = None
-          targets = None
+        if mode in ['train','eval']:
+          answer_ids = []
+          targets = []
           s_ix, e_ix = None, None
           # bytes for the current span
           span_start_byte, span_end_byte = start_bytes[doc_span.start], end_bytes[
               doc_span.start + doc_span.length - 1]
-          # collect a single label. if short answer exists, collect. if not, check long answer.
-          if target_byte_range.short_start >= span_start_byte and target_byte_range.short_end <= span_end_byte:
-              answer_id = 0
-              # byte ix position
-              s_ix = np.where(start_bytes == target_byte_range.short_start)[0]
-              e_ix = np.where(end_bytes == target_byte_range.short_end)[0]
-          elif target_byte_range.long_start >= span_start_byte and target_byte_range.long_end <= span_end_byte:
-              answer_id = 1
-              # index. this takes into account cases where long_start coincide with HTML tags.
-              s_ix = np.where(start_bytes >= target_byte_range.long_start)[0]
-              e_ix = np.where(end_bytes <= target_byte_range.long_end)[0]
-          if answer_id in (0, 1) and s_ix is not None and e_ix is not None:
-            try:
-              s = s_ix.min() - doc_span.start + total_offset - 1
-              e = e_ix.max() - doc_span.start + total_offset - 1
-            except:
-              tf.logging.info('error encountered..')
-              continue
-            assert 0 <= s < max_seq_length
-            if not 0 <= e < max_seq_length:
-              # this ensures the last token for the byte is included in the current span.
-              continue
-            # targets are inclusive.
-            targets = (s, e)
-          elif downsample_null_instances:
+          for target_byte_range in target_byte_ranges:
+              answer_id = None
+              # collect a single label. if short answer exists, collect. if not, check long answer.
+              if target_byte_range.short_start >= span_start_byte and target_byte_range.short_end <= span_end_byte:
+                  answer_id = 0
+                  # byte ix position
+                  s_ix = np.where(start_bytes == target_byte_range.short_start)[0]
+                  e_ix = np.where(end_bytes == target_byte_range.short_end)[0]
+              elif target_byte_range.long_start >= span_start_byte and target_byte_range.long_end <= span_end_byte:
+                  answer_id = 1
+                  # index. this takes into account cases where long_start coincide with HTML tags.
+                  s_ix = np.where(start_bytes >= target_byte_range.long_start)[0]
+                  e_ix = np.where(end_bytes <= target_byte_range.long_end)[0]
+              if answer_id in (0, 1) and s_ix is not None and e_ix is not None:
+                try:
+                  s = s_ix.min() - doc_span.start + total_offset - 1
+                  e = e_ix.max() - doc_span.start + total_offset - 1
+                except:
+                  tf.logging.info('error encountered..')
+                  continue
+                assert 0 <= s < max_seq_length
+                if not 0 <= e < max_seq_length:
+                  # this ensures the last token for the byte is included in the current span.
+                  continue
+                # targets are inclusive.
+                targets.append((s, e))
+                answer_ids.append(answer_id)
+          # for eval, if less than 2 annotations are found, discard.
+          if mode == 'eval' and len(targets) < BETA:
+              targets = []
+          if downsample_null_instances and not targets:
             # downsample null instances if specified.
             if np.random.random(1) > 1. / DOWNSAMPLE:
               continue
-            answer_id = 2
+            answer_id = [2]
             # no answer
-            targets = (0, 0)
-          if targets:
-            tf.logging.info(targets)
+            targets = [(0, 0)]
+          if targets and answer_id:
+            tf.logging.info(zip(answer_ids,targets))
             feature = InputFeatures(example_id=example.get('example_id'),
                                     input_ids=input_ids,
                                     input_mask=input_mask,
@@ -336,8 +358,8 @@ def convert_example(example,
                                     start_bytes=start_bytes_span,
                                     end_bytes=end_bytes_span,
                                     tokens=tokens)
-            #tf.logging.info([feature.targets, feature.answer_id, feature.example_id])
-          train_writer(feature)
+            if train_writer:
+              train_writer(feature)
 
 
 def main(_):
@@ -351,32 +373,33 @@ def main(_):
 
   tokenizer = create_tokenizer_from_hub_module()
 
-  def _create_tf_records(is_training, _train_file):
+  def _create_tf_records(mode, _train_file):
     tf.logging.info(_train_file)
     # writes into the same directory
     _train_file_out = re.sub(".jsonl", ".tf_record", _train_file)
     train_writer = FeatureWriter(
         filename=_train_file_out,
-        is_training=is_training)
+        mode=mode)
     with jsonlines.open(_train_file) as reader:
         for i, example in enumerate(reader):
             if i % 1e3 == 0: tf.logging.info("{}:{}".format(_train_file, i))
             convert_example(example,
                             tokenizer=tokenizer,
-                            is_training=is_training,
+                            mode=mode,
                             max_seq_length=FLAGS.max_seq_length,
                             doc_stride=FLAGS.doc_stride,
                             max_query_length=FLAGS.max_seq_length,
                             train_writer=train_writer.process_feature)
 
     tf.logging.info("{} completed".format(_train_file))
+    tf.logging.info("{}:{} examples processed".format(mode, train_writer.num_features))
     train_writer.close()
   train_files = [os.path.join(_train_path, _file) for _file in os.listdir(_train_path) if _file.endswith(".jsonl")]
   dev_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".jsonl")]
   for train_file in train_files:
-    _create_tf_records(True, train_file)
+    _create_tf_records('train', train_file)
   for dev_file in dev_files:
-    _create_tf_records(True, dev_file)
+    _create_tf_records('eval', dev_file)
 
 if __name__ == "__main__":
     tf.app.run()
