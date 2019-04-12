@@ -39,7 +39,7 @@ NB_EPOCHS = 10000
 
 def input_fn_builder(input_files, seq_length, mode):
   """Creates an `input_fn` closure to be passed to Estimator."""
-
+  tf.logging.info(mode)
   name_to_features = {
       "example_id": tf.FixedLenFeature([], tf.int64),
       "input_ids": tf.FixedLenFeature([seq_length], tf.int64),
@@ -48,8 +48,10 @@ def input_fn_builder(input_files, seq_length, mode):
       "start_bytes": tf.FixedLenFeature([seq_length], tf.int64),
       "end_bytes": tf.FixedLenFeature([seq_length], tf.int64),
   }
-  if mode in ['train', 'eval']:
-    name_to_features["positions"] = tf.FixedLenFeature([], tf.int64)
+  if mode == 'train':
+    name_to_features["positions"] = tf.FixedLenFeature([2], tf.int64)
+  if mode == 'eval':
+    name_to_features["positions"] = tf.FixedLenFeature([10], tf.int64)
 
   def _decode_record(record):
     """Decodes a record to a TensorFlow example."""
@@ -217,8 +219,8 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         loss = -tf.reduce_mean(
             tf.reduce_sum(one_hot_positions * log_probs, axis=-1))
         return loss
-    # labels
-    positions = features["positions"] #[batch_size, 2] for train or [batch_size, 5, 2] for eval
+    # labels - cast to [batch_size, 2] for train or [batch_size, 5, 2] for eval
+    positions = features["positions"]
     if mode == tf.estimator.ModeKeys.TRAIN:
       # loss function
       start_loss = compute_loss(start_logits, positions[:, 0])
@@ -233,6 +235,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       return output_spec
 
     if mode == tf.estimator.ModeKeys.EVAL:
+        positions = tf.reshape(positions, shape=(-1, 5, 2))
         sa = span_accuracy(start_logits, end_logits, positions)
         _accuracy_ = metrics.mean(sa)
         # precision / recall

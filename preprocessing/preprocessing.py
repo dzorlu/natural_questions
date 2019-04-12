@@ -47,9 +47,6 @@ class FeatureWriter(object):
   def process_feature(self, feature):
     """
     Write a InputFeature to the TFRecordWriter as a tf.train.Example.
-    
-
-  
     """
     self.num_features += 1
     if self.num_features % 1e3 == 0:
@@ -68,8 +65,10 @@ class FeatureWriter(object):
     features["start_bytes"] = create_int_feature(feature.start_bytes)
     features["end_bytes"] = create_int_feature(feature.end_bytes)
 
-    if self.mode == 'train' or 'eval':
-      features["positions"] = create_int_feature(feature.targets)
+
+    if self.mode in ['eval','train']:
+      positions = list(sum(feature.targets, ()))
+      features["positions"] = create_int_feature(positions)
       features['answer_id'] = create_int_feature(feature.answer_id)
 
     tf_example = tf.train.Example(features=tf.train.Features(feature=features))
