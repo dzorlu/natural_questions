@@ -50,7 +50,7 @@ class FeatureWriter(object):
     """
     self.num_features += 1
     if self.num_features % 1e3 == 0:
-        tf.logging.info(self.num_features, self.filename)
+        tf.logging.info((self.num_features, self.filename))
 
     def create_int_feature(values):
       feature = tf.train.Feature(
@@ -76,7 +76,7 @@ class FeatureWriter(object):
     return
 
   def close(self):
-    tf.logging.info("{} examples found".format(self.num_features))
+    tf.logging.info("{}: {} examples found".format(self.filename, str(self.num_features)))
     self._writer.close()
 
 
@@ -323,9 +323,9 @@ def convert_example(example,
                 except:
                   tf.logging.info('error encountered..')
                   continue
-                assert 0 <= s < max_seq_length
-                if not 0 <= e < max_seq_length:
-                  # this ensures the last token for the byte is included in the current span.
+                if not 0 <= e < max_seq_length or not 0 <= s < max_seq_length:
+                  # this ensures the first/last token for the byte is included in the current span.
+                  tf.logging.info("{} is outside the range".format((s,e)))
                   continue
                 # targets are inclusive.
                 targets.append((s, e))
@@ -349,7 +349,6 @@ def convert_example(example,
               targets.append((-1, -1))
               answer_ids.append(-1)
           if targets and answer_ids:
-            tf.logging.info(list(zip(answer_ids,targets)))
             feature = InputFeatures(example_id=example.get('example_id'),
                                     input_ids=input_ids,
                                     input_mask=input_mask,
@@ -383,7 +382,7 @@ def main(_):
         mode=mode)
     with jsonlines.open(_train_file) as reader:
         for i, example in enumerate(reader):
-            if i % 1e3 == 0: tf.logging.info("{}:{}".format(_train_file, i))
+            if i % 1e3 == 0: tf.logging.info("{}:{}".format(_train_file, str(i)))
             convert_example(example,
                             tokenizer=tokenizer,
                             mode=mode,

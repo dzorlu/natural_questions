@@ -103,13 +103,18 @@ def span_accuracy(predictions, positions, n_way=5):
     :param positions: [batch_size, 5, 2]
     :return: [batch_size]
     """
-
     predictions = tf.stack(n_way * [predictions], axis=1)
     _equal = tf.cast(math_ops.equal(predictions, positions), tf.int64)
     is_correct = tf.reduce_any(tf.equal(tf.reduce_sum(_equal, axis=-1), 2), axis=-1)
     return is_correct
 
 def precision_and_recall(accuracy, positions):
+  """
+  calculates precision and recall.
+  :param accuracy:
+  :param positions:
+  :return:
+  """
   _equal = tf.cast(math_ops.equal(positions, 0), tf.int64)
   labels = tf.reduce_any(tf.not_equal(tf.reduce_sum(_equal, axis=-1), 2), -1)
   tp = tf.reduce_sum(
@@ -151,6 +156,8 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         input_mask=None,
         segment_ids=segment_ids,
         use_one_hot_embeddings=use_one_hot_embeddings)
+    # span predictions [0, seq_length]
+    _, predictions = argmax_2d(start_l=start_logits, end_l=end_logits)
 
     start_ix = tf.argmax(start_logits, axis=-1)  # [batch_size]
     end_ix = tf.argmax(end_logits, axis=-1)  # [batch_size]
@@ -164,14 +171,14 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       assignment_map, initialized_variable_names = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
       tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
 
-    tf.logging.info("**** Trainable Variables ****")
-    for var in tvars:
-      init_string = ""
-      if var.name in initialized_variable_names:
-        init_string = ", *INIT_FROM_CKPT*"
-      tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-                      init_string)
-      tf.summary.histogram(var.name, var)
+    # tf.logging.info("**** Trainable Variables ****")
+    # for var in tvars:
+    #   init_string = ""
+    #   if var.name in initialized_variable_names:
+    #     init_string = ", *INIT_FROM_CKPT*"
+    #   tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
+    #                   init_string)
+    #   tf.summary.histogram(var.name, var)
     score, y_pred = argmax_2d(start_logits, end_logits)
     if mode == tf.estimator.ModeKeys.PREDICT:
       """
@@ -228,6 +235,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       total_loss = (start_loss + end_loss) / 2.0
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, False)
+
       output_spec = tf.estimator.EstimatorSpec(
           mode=mode,
           loss=total_loss,
@@ -236,13 +244,14 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
     if mode == tf.estimator.ModeKeys.EVAL:
         positions = tf.reshape(positions, shape=(-1, 5, 2))
-        sa = span_accuracy(start_logits, end_logits, positions)
-        _accuracy_ = metrics.mean(sa)
+        sa = span_accuracy(predictions=predictions, positions=positions)
+        accuracy_op = metrics.mean(sa)
         # precision / recall
-        precision_and_recall_metrics = precision_and_recall(_accuracy_, positions)
+        precision_and_recall_metrics = precision_and_recall(sa, positions)
         precision_op = metrics.mean(precision_and_recall_metrics['precision'])
         recall_op = metrics.mean(precision_and_recall_metrics['recall'])
-        # this takes the first annotation, which might not be the best way to handle this
+        # loss - this takes the first annotation as ground trugh,
+        # which might not be the best way to approximate the eval loss
         _positions = positions[:, 0, :]
         # loss function
         start_loss = compute_loss(start_logits, _positions[:, 0])
@@ -250,7 +259,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         total_loss = (start_loss + end_loss) / 2.0
         return tf.estimator.EstimatorSpec(mode,
                                           loss=total_loss,
-                                          eval_metric_ops={'span_accuracy': sa,
+                                          eval_metric_ops={'span_accuracy': accuracy_op,
                                                            'precision': precision_op,
                                                            'recall': recall_op})
   return model_fn
