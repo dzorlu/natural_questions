@@ -26,8 +26,7 @@ example, then the system is required to output a non-null answer that is seen at
 conversely if fewer than 2 annotators give a non-null long answer, the system is required to return NULL as its output(1).
 
 Hence, when processing the evaluation dataset, the module discards any span that has less than two target annotations. The annotations, in turn,
-are used at evaluation time whether the model prediction is accurate or not. The span predictions are calculated taking the argmax
-over two dimensions and masking the upper-right corner of start and end span combinations.
+are used at evaluation time whether the model prediction is accurate or not. 
 
 The baseline paper introduces special markup tokens to point the model to tables etc,
 where answers are most likely to be found. I have not implemented this yet. Yes/No answers are not taken into consideration either.
@@ -65,6 +64,9 @@ All of the parameters of BERT and the single layer `W` on top that transforms BE
 ```
 
 The model is trained approximately for 3 epochs.
+
+The span predictions are calculated taking the argmax
+over two dimensions and masking the upper-right corner of start and end span combinations.
 
 
 (1) [Natural Questions: a Benchmark for Question Answering Research](https://storage.googleapis.com/pub-tools-public-publication-data/pdf/b8c26e4347adc3453c15d96a09e6f7f102293f71.pdf)

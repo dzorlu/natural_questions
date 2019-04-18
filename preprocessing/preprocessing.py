@@ -3,6 +3,8 @@ import tensorflow as tf
 import tensorflow_hub as hub
 import collections
 import numpy as np
+import jsonlines
+import re
 import os
 
 import bert
@@ -33,6 +35,7 @@ flags.DEFINE_integer(
 flags.DEFINE_integer(
     "doc_stride", None,
     "doc_stride")
+
 
 
 class FeatureWriter(object):
@@ -363,8 +366,6 @@ def convert_example(example,
 
 
 def main(_):
-  import jsonlines
-  import re
   tf.logging.set_verbosity(tf.logging.INFO)
 
   _dev_path = os.path.join(FLAGS.bert_data_dir, 'dev')

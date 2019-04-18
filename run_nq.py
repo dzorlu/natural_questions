@@ -6,6 +6,7 @@ from __future__ import print_function
 
 
 import os
+import json
 import tensorflow as tf
 from tensorflow import metrics
 from tensorflow.python.ops import math_ops
@@ -34,6 +35,19 @@ flags.DEFINE_integer(
     "Number of total training steps")
 
 
+def read_candidates(input_path):
+  """
+  map example_ids -> long answer candidates to map short answers to lng answers.
+  :param input_path:
+  :return:
+  """
+  import jsonlines
+  candidates = {}
+  for _file in input_path:
+    with jsonlines.open(_file) as reader:
+      for i, example in enumerate(reader):
+        candidates[example['example_id']] = example['long_answer_candidates']
+  return candidates
 
 NB_EPOCHS = 10000
 
@@ -118,15 +132,17 @@ def precision_and_recall(accuracy, positions):
   _equal = tf.cast(math_ops.equal(positions, 0), tf.int64)
   labels = tf.reduce_any(tf.not_equal(tf.reduce_sum(_equal, axis=-1), 2), -1)
   tp = tf.reduce_sum(
-      tf.cast(math_ops.logical_and(math_ops.equal(accuracy, True), math_ops.equal(labels, False)), tf.int64))
+      tf.cast(math_ops.logical_and(math_ops.equal(accuracy, True), math_ops.equal(labels, False)), tf.float64))
   fp = tf.reduce_sum(
-      tf.cast(math_ops.logical_and(math_ops.equal(accuracy, True), math_ops.equal(labels, True)), tf.int64))
+      tf.cast(math_ops.logical_and(math_ops.equal(accuracy, False), math_ops.equal(labels, False)), tf.float64))
   fn = tf.reduce_sum(
-      tf.cast(math_ops.logical_and(math_ops.equal(accuracy, False), math_ops.equal(labels, True)), tf.int64))
-  precision = tp / (tp + fp)
-  recall = tp / (tp + fn)
+      tf.cast(math_ops.logical_and(math_ops.equal(accuracy, False), math_ops.equal(labels, True)), tf.float64))
+  precision = tf.divide(tp, tf.math.maximum(tp + fp, 1))
+  recall = tf.divide(tp, tf.math.maximum(tp + fn, 1))
   precision_and_recall_metrics = {'precision': precision,
-                                  'recall': recall}
+                                  'recall': recall,
+                                  'tp': tp,
+                                  'fp': fp}
   return precision_and_recall_metrics
 
 
@@ -156,8 +172,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         input_mask=None,
         segment_ids=segment_ids,
         use_one_hot_embeddings=use_one_hot_embeddings)
-    # span predictions [0, seq_length]
-    _, predictions = argmax_2d(start_l=start_logits, end_l=end_logits)
 
     start_ix = tf.argmax(start_logits, axis=-1)  # [batch_size]
     end_ix = tf.argmax(end_logits, axis=-1)  # [batch_size]
@@ -171,14 +185,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       assignment_map, initialized_variable_names = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
       tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
 
-    # tf.logging.info("**** Trainable Variables ****")
-    # for var in tvars:
-    #   init_string = ""
-    #   if var.name in initialized_variable_names:
-    #     init_string = ", *INIT_FROM_CKPT*"
-    #   tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-    #                   init_string)
-    #   tf.summary.histogram(var.name, var)
+    # span predictions [0, seq_length]
     score, y_pred = argmax_2d(start_logits, end_logits)
     if mode == tf.estimator.ModeKeys.PREDICT:
       """
@@ -244,12 +251,14 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
     if mode == tf.estimator.ModeKeys.EVAL:
         positions = tf.reshape(positions, shape=(-1, 5, 2))
-        sa = span_accuracy(predictions=predictions, positions=positions)
+        sa = span_accuracy(predictions=y_pred, positions=positions)
         accuracy_op = metrics.mean(sa)
         # precision / recall
         precision_and_recall_metrics = precision_and_recall(sa, positions)
         precision_op = metrics.mean(precision_and_recall_metrics['precision'])
         recall_op = metrics.mean(precision_and_recall_metrics['recall'])
+        tp_op = metrics.mean(precision_and_recall_metrics['tp'])
+        fp_op = metrics.mean(precision_and_recall_metrics['fp'])
         # loss - this takes the first annotation as ground trugh,
         # which might not be the best way to approximate the eval loss
         _positions = positions[:, 0, :]
@@ -260,8 +269,10 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         return tf.estimator.EstimatorSpec(mode,
                                           loss=total_loss,
                                           eval_metric_ops={'span_accuracy': accuracy_op,
-                                                           'precision': precision_op,
-                                                           'recall': recall_op})
+                                                           '_precision': precision_op,
+                                                           '_recall': recall_op,
+                                                           'tp': tp_op,
+                                                           'fp': fp_op})
   return model_fn
 
 
@@ -282,8 +293,6 @@ def main(_):
       model_dir=FLAGS.output_dir
   )
 
-  #num_warmup_steps = int(FLAGS.num_train_steps * 0.01)
-  #tf.logging.info("nb training steps: {}".format(num_warmup_steps))
   # log p(t|c) not included for the squad training setup.
   model_fn = model_fn_builder(
       bert_config=bert_config,
@@ -320,17 +329,28 @@ def main(_):
 
   #TODO: predict and write predictions.
   if FLAGS.do_predict:
-    predict_files = [os.path.join(_predict_path, _file) for _file in os.listdir(_train_path) if
+    # TODO: _predict_path
+    predict_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if
                      _file.endswith(".tf_record")]
+    predict_json_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".jsonl")]
     predict_input_fn = input_fn_builder(
-        input_files=predict_files,
-        seq_length=FLAGS.max_seq_length,
-        mode='predict')
+      input_files=predict_files,
+      seq_length=FLAGS.max_seq_length,
+      mode='predict')
     results = []
     for batch_result in estimator.predict(predict_input_fn):
-        results.extend(batch_result)
-        if len(results) % 1000 == 0:
-            tf.logging.info("Processing example: %d" % (len(results)))
+      results.extend(batch_result)
+      if len(results) % 1000 == 0:
+        tf.logging.info("Processing example: %d" % (len(results)))
+    output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
+    with tf.gfile.Open(output_prediction_file, "w") as f:
+      json.dump(results, f, indent=4)
+    # get long candidates to map short answers to long answers.
+    candidates = read_candidates(predict_json_files)
+    candidates_file = os.path.join(FLAGS.output_dir, "candidates.json")
+    with tf.gfile.Open(candidates_file, "w") as f:
+      json.dump(candidates, f, indent=4)
+
 
 if __name__ == "__main__":
   tf.logging.info(FLAGS)
