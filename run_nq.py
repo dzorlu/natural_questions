@@ -213,11 +213,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
       predictions = {
         "example_id": features["example_id"],
-        "input_ids": input_ids,
-        "start_logits": start_logits,
-        "end_logits": end_logits,
-        "y_pred_start": y_pred_start,
-        "y_pred_end": y_pred_end,
         "start_byte": start_byte,
         "end_byte": end_byte,
         "score": score
@@ -277,6 +272,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
 
 def main(_):
+  import numpy as np
   tf.logging.set_verbosity(tf.logging.INFO)
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
   tf.gfile.MakeDirs(FLAGS.output_dir)
@@ -329,6 +325,7 @@ def main(_):
 
   #TODO: predict and write predictions.
   if FLAGS.do_predict:
+    output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
     # TODO: _predict_path
     predict_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if
                      _file.endswith(".tf_record")]
@@ -338,13 +335,16 @@ def main(_):
       seq_length=FLAGS.max_seq_length,
       mode='predict')
     results = []
-    for batch_result in estimator.predict(predict_input_fn):
-      results.extend(batch_result)
+    for _batch_result in estimator.predict(predict_input_fn):
+      batch_result = {}
+      # numpy -> list
+      for k, v in _batch_result.items():
+        batch_result[k] = int(v)
+      results.append(batch_result)
       if len(results) % 1000 == 0:
         tf.logging.info("Processing example: %d" % (len(results)))
-    output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
-    with tf.gfile.Open(output_prediction_file, "w") as f:
-      json.dump(results, f, indent=4)
+        with tf.gfile.Open(output_prediction_file, "w") as f:
+          json.dump(results, f, indent=4)
     # get long candidates to map short answers to long answers.
     candidates = read_candidates(predict_json_files)
     candidates_file = os.path.join(FLAGS.output_dir, "candidates.json")
