@@ -69,4 +69,10 @@ The span predictions are calculated taking the argmax
 over two dimensions and masking the upper-right corner of start and end span combinations.
 
 
+
+TODO:
+-----
+Score each long answer candidate with BERT + 2-way classification
+. Pick k. Feed into BERT + span selector
+
 (1) [Natural Questions: a Benchmark for Question Answering Research](https://storage.googleapis.com/pub-tools-public-publication-data/pdf/b8c26e4347adc3453c15d96a09e6f7f102293f71.pdf)
