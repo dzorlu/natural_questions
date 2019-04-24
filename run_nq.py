@@ -46,7 +46,7 @@ def read_candidates(input_path):
   for _file in input_path:
     with jsonlines.open(_file) as reader:
       for i, example in enumerate(reader):
-        candidates[example['example_id']] = example['long_answer_candidates']
+        candidates[int(example['example_id'])] = example['long_answer_candidates']
   return candidates
 
 NB_EPOCHS = 10000
@@ -96,9 +96,10 @@ def argmax_2d(start_l, end_l):
     :param end_l: [ batch_size, seq_length]
     :return: score, ix [batch_size, 2]
     """
-    # exponentiate to make large negative # -> zero
-    start_l = tf.math.exp(start_l)
-    end_l = tf.math.exp(end_l)
+    # zero out negative activations.
+    start_l = tf.math.maximum(start_l, 0)
+    end_l = tf.math.maximum(end_l, 0)
+
     start_l = tf.expand_dims(start_l, 1)
     end_l = tf.expand_dims(end_l, -1)
     logits = start_l * end_l
@@ -210,7 +211,7 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       y_pred_end = tf.cast(tf.one_hot(y_pred[:, 1], depth=tf.shape(end_bytes)[-1]), dtype=tf.int64)
       start_byte = tf.reduce_sum(start_bytes * y_pred_start, axis=-1)
       end_byte = tf.reduce_sum(end_bytes * y_pred_end, axis=-1)
-
+      # TODO: logodds of prediction / no answer.
       predictions = {
         "example_id": features["example_id"],
         "start_byte": start_byte,
@@ -306,7 +307,7 @@ def main(_):
 
   if FLAGS.do_train:
     train_files = [os.path.join(_train_path, _file) for _file in os.listdir(_train_path) if _file.endswith(".tf_record")]
-    dev_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".tf_record")]
+    dev_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith("eval.tf_record")]
     tf.logging.info("{} files found for training".format(len(train_files)))
     tf.logging.info("{} files found for dev".format(len(dev_files)))
     train_input_fn = input_fn_builder(
@@ -325,10 +326,12 @@ def main(_):
 
   #TODO: predict and write predictions.
   if FLAGS.do_predict:
+    from processing import postprocessing
     output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
     # TODO: _predict_path
+
     predict_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if
-                     _file.endswith(".tf_record")]
+                     _file.endswith("inference.tf_record")]
     predict_json_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".jsonl")]
     predict_input_fn = input_fn_builder(
       input_files=predict_files,
@@ -343,13 +346,12 @@ def main(_):
       results.append(batch_result)
       if len(results) % 1000 == 0:
         tf.logging.info("Processing example: %d" % (len(results)))
-        with tf.gfile.Open(output_prediction_file, "w") as f:
-          json.dump(results, f, indent=4)
     # get long candidates to map short answers to long answers.
     candidates = read_candidates(predict_json_files)
-    candidates_file = os.path.join(FLAGS.output_dir, "candidates.json")
-    with tf.gfile.Open(candidates_file, "w") as f:
-      json.dump(candidates, f, indent=4)
+    predictions = postprocessing.extract_prediction(results, candidates)
+    predictions_file = os.path.join(FLAGS.output_dir, "predictions.json")
+    with tf.gfile.Open(predictions_file, "w") as f:
+      json.dump(predictions, f, indent=4)
 
 
 if __name__ == "__main__":

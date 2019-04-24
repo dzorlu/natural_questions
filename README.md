@@ -68,11 +68,24 @@ The model is trained approximately for 3 epochs.
 The span predictions are calculated taking the argmax
 over two dimensions and masking the upper-right corner of start and end span combinations.
 
+## inference / post-processing
+The inference stage consists of (i) making predictions for each span for a document (ii) aggregating the span predictions 
+over to get a single prediction for a given document. Because the `no-answer` is indexed to zero and is an option in each
+span prediction, most of which genuinly does not have an answer, post-processing step needs to take the double-counting into account. The paper does that by always making 
+a prediction and adjusting the answer with the help of the evaluation script.
 
 
-TODO:
------
-Score each long answer candidate with BERT + 2-way classification
-. Pick k. Feed into BERT + span selector
+ 
+
+|        |   end_byte |   example_id |   score |   start_byte |
+|-------:|-----------:|-------------:|--------:|-------------:|
+| 139660 |      86187 | -8.15243e+18 |     150 |        85543 |
+| 139663 |          0 | -8.15243e+18 |    5175 |            0 |
+| 139672 |          0 | -8.15243e+18 |     395 |            0 |
+| 139675 |     110326 | -8.15243e+18 |     925 |       110314 |
+| 139676 |          0 | -8.15243e+18 |  427739 |            0 |
+
+
+
 
 (1) [Natural Questions: a Benchmark for Question Answering Research](https://storage.googleapis.com/pub-tools-public-publication-data/pdf/b8c26e4347adc3453c15d96a09e6f7f102293f71.pdf)
