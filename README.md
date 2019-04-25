@@ -85,7 +85,14 @@ a prediction and adjusting the answer with the help of the evaluation script.
 | 139675 |     110326 | -8.15243e+18 |     925 |       110314 |
 | 139676 |          0 | -8.15243e+18 |  427739 |            0 |
 
-
+```buildoutcfg
+{"long-best-threshold-f1": 0.5089528999610743, 
+"long-best-threshold-precision": 0.4613620324629499, 
+"long-best-threshold-recall": 0.5674913194444444, 
+"long-best-threshold": 16.0, 
+"long-recall-at-precision>=0.5": 0.4769965277777778, 
+"long-precision-at-precision>=0.5": 0.5012542759407069}
+```
 
 
 (1) [Natural Questions: a Benchmark for Question Answering Research](https://storage.googleapis.com/pub-tools-public-publication-data/pdf/b8c26e4347adc3453c15d96a09e6f7f102293f71.pdf)

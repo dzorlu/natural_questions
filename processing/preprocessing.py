@@ -203,8 +203,6 @@ def convert_example(example,
         target_byte_ranges = []
         for annotation in example.get('annotations'):
             target_byte_ranges.append(_get_target_byte_range(annotation))
-    tf.logging.info('i am here')
-    print('here')
 
     for (i, token) in enumerate(example.get('document_tokens')):
         _token = token.get('token')
@@ -384,15 +382,13 @@ def main(_):
   def _create_tf_records(mode, _train_file):
     tf.logging.info(_train_file)
     # writes into the same directory
-    _train_file_out = re.sub("_{}.jsonl".format(mode), ".tf_record", _train_file)
+    _train_file_out = re.sub(".jsonl", "_{}.tf_record".format(mode), _train_file)
     train_writer = FeatureWriter(
         filename=_train_file_out,
         mode=mode)
     print("file {}".format(_train_file))
     with jsonlines.open(_train_file) as reader:
         for i, example in enumerate(reader):
-            tf.logging.info("example {}".format(i))
-            print("example {}".format(i))
             if i % 1e3 == 0: tf.logging.info("{}:{}".format(_train_file, str(i)))
             convert_example(example,
                             tokenizer=tokenizer,
@@ -408,10 +404,10 @@ def main(_):
   train_files = [os.path.join(_train_path, _file) for _file in os.listdir(_train_path) if _file.endswith(".jsonl")]
   dev_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".jsonl")]
   # extract targets
-  # for train_file in train_files:
-  #   _create_tf_records('train', train_file)
-  # for dev_file in dev_files:
-  #   _create_tf_records('eval', dev_file)
+  for train_file in train_files:
+    _create_tf_records('train', train_file)
+  for dev_file in dev_files:
+    _create_tf_records('eval', dev_file)
   # for inference
   for dev_file in dev_files:
     _create_tf_records('inference', dev_file)

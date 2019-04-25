@@ -328,8 +328,7 @@ def main(_):
   if FLAGS.do_predict:
     from processing import postprocessing
     output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
-    # TODO: _predict_path
-
+    # TODO: _predict_path for final submission
     predict_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if
                      _file.endswith("inference.tf_record")]
     predict_json_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".jsonl")]
@@ -348,8 +347,14 @@ def main(_):
         tf.logging.info("Processing example: %d" % (len(results)))
     # get long candidates to map short answers to long answers.
     candidates = read_candidates(predict_json_files)
-    predictions = postprocessing.extract_prediction(results, candidates)
     predictions_file = os.path.join(FLAGS.output_dir, "predictions.json")
+    with tf.gfile.Open(predictions_file, "w") as f:
+      json.dump(results, f, indent=4)
+    candidates_file = os.path.join(FLAGS.output_dir, "candidates.json")
+    with tf.gfile.Open(candidates_file, "w") as f:
+      json.dump(candidates, f, indent=4)
+    predictions = postprocessing.extract_prediction(results, candidates)
+    predictions_file = os.path.join(FLAGS.output_dir, "final_predictions.json")
     with tf.gfile.Open(predictions_file, "w") as f:
       json.dump(predictions, f, indent=4)
 
