@@ -74,6 +74,9 @@ over to get a single prediction for a given document. Because the `no-answer` is
 span prediction, most of which genuinly does not have an answer, post-processing step needs to take the double-counting into account. The paper does that by always making 
 a prediction and adjusting the answer with the help of the evaluation script.
 
+For each example, I exclude any null predictions. I take the prediction with highest count - this means that overlapping context gave the same answer-
+, if there is a tie, 
+
 
  
 
@@ -93,6 +96,8 @@ a prediction and adjusting the answer with the help of the evaluation script.
 "long-recall-at-precision>=0.5": 0.4769965277777778, 
 "long-precision-at-precision>=0.5": 0.5012542759407069}
 ```
+
+
 
 
 (1) [Natural Questions: a Benchmark for Question Answering Research](https://storage.googleapis.com/pub-tools-public-publication-data/pdf/b8c26e4347adc3453c15d96a09e6f7f102293f71.pdf)
