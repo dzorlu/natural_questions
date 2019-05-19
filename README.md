@@ -139,8 +139,10 @@ A detailed error analysis can be found in the [notebook](https://github.com/dzor
  'url': 'https://en.wikipedia.org//w/index.php?title=The_Mother_(How_I_Met_Your_Mother)&amp;oldid=802354471'}
  ```
 
+2- Comparing the distribution of span indices where the model makes a prediction versus where the annotated lie in dev and training set,
+the model does not look well-calibrated. For example, 
 
-![Model answers span distribution](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/model_answer_span_distribution.png
+![Model answers span distribution](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/model_answer_span_distribution.png)
 ![Train and dev dataset answers span distribution](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/train_answer_span_distribution.png)
 
 
