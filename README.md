@@ -148,6 +148,62 @@ this is achieved by providing special markup tokens to give the model a notion o
 ![Model answers span distribution](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/model_answer_span_distribution.png)
 ![Train and dev dataset answers span distribution](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/train_answer_span_distribution.png)
 
+3- The most obvious errors are where the model gets the synthetic properties right but the context wrong.
 
+In the example below, the span prediction is indeed a temperature - but contextual it is wrong.
 
+```
+{'gold_answers': [],
+ 'gold_span': [],
+ 'model_answers': '− 30 ° C ( − 20 ° F )',
+ 'model_span': (855, 864),
+ 'question_text': 'what is the lowest recorded temperature on mount vinson',
+ 'url': 'https://en.wikipedia.org//w/index.php?title=Vinson_Massif&amp;oldid=836064305'}
+```
+
+In the examples below, the answers to the question are expected be a person, which the model gets it right.
+But it fails to understand the context of the question and emits the wrong answer.
+
+```
+{'gold_answers': [],
+ 'gold_span': [],
+ 'model_answers': 'Sir Henry Rawlinson',
+ 'model_span': (1581, 1583),
+ 'question_text': 'who wrote the first declaration of human rights',
+ 'url': 'https://en.wikipedia.org//w/index.php?title=Cyrus_Cylinder&amp;oldid=836606627'}
+
+{'gold_answers': ['The planner Raymond Unwin and the architect Barry Parker',
+  'planner Raymond Unwin and the architect Barry Parker',
+  'planner Raymond Unwin',
+  'Raymond Unwin'],
+ 'gold_span': [(700, 708), (701, 708), (701, 703), (702, 703)],
+ 'model_answers': 'York philanthropist , Joseph Rowntree',
+ 'model_span': (480, 484),
+ 'question_text': 'who designed the garden city of new earswick',
+ 'url': 'https://en.wikipedia.org//w/index.php?title=New_Earswick&amp;oldid=826057861'}
+```
+Also, some of the questions are hard.
+
+Below, the model correctly predicts who the first nominated member is but it fails to capture
+the gender.
+```
+{'gold_answers': [],
+ 'gold_span': [],
+ 'model_answers': 'Alladi Krishnaswamy Iyer',
+ 'model_span': (556, 558),
+ 'question_text': 'who was the first lady nominated member of the rajya sabha',
+ 'url': 'https://en.wikipedia.org//w/index.php?title=List_of_nominated_members_of_Rajya_Sabha&amp;oldid=818220921'}
+```
+Here, Rumpley is another dog that appears on Tom and Jerry, but a minor character. This is an example that shows
+earlier spans are more likely to contain the right answer but without proper supervision, the model has no idea.  
+```
+{'gold_answers': ['Spike',
+  'Spike',
+  'Spike , occasionally referred to as Butch or Killer'],
+ 'gold_span': [(1520, 1520), (1520, 1520), (1520, 1528)],
+ 'model_answers': 'Rumpley',
+ 'model_span': (8285, 8285),
+ 'question_text': "what's the dog's name on tom and jerry",
+ 'url': 'https://en.wikipedia.org//w/index.php?title=List_of_Tom_and_Jerry_characters&amp;oldid=812821786'}
+ ```
 
