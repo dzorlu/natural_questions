@@ -324,11 +324,8 @@ def main(_):
     eval_spec = tf.estimator.EvalSpec(input_fn=train_dev_fn,steps=FLAGS.eval_steps)
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
-  #TODO: predict and write predictions.
   if FLAGS.do_predict:
     from processing import postprocessing
-    output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
-    # TODO: _predict_path for final submission
     predict_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if
                      _file.endswith("inference.tf_record")]
     predict_json_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".jsonl")]
