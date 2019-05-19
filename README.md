@@ -7,9 +7,8 @@ search engine whereas answers are corresponding Wikipedia pages. The answers are
 The long and short annotations might be empty however - The answer to the search query can be a Yes / No answer or
 the Wikipedia entry might not contain the answer. The breakdown is best illustrated in the original paper.
 
-https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/Figure%201.png
 
-![Figure 1](supporting_docs/Figure 1.png)
+![Figure 1](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/Figure%201.png)
 
 The repo replicates the code and results presented in [A BERT Baseline for the Natural Questions](https://arxiv.org/abs/1901.08634). 
 The paper fine-tunes the [BERT model](https://arxiv.org/abs/1810.04805).
