@@ -140,7 +140,7 @@ A detailed error analysis can be found in the [notebook](https://github.com/dzor
  ```
 
 2- Comparing the distribution of span indices where the model prediction is found (left) versus where the annotations lie in dev and training set (right),
-the model does not look well-calibrated. For example, 75% of the model predictions fall within the first 10 document span, whereas first 10 document spans
+the model does not look well-calibrated. Specifically, 75% of the model predictions fall within the first 10 document span, whereas first 10 document spans
 contain more than 90% of the answers in training and dev dataset.
 This is probably because the model V1 does not provide supervision in terms of location of the answer. In the benchmark paper,
 this is achieved by providing special markup tokens to give the model a notion of which part of the document it is reading.
@@ -195,7 +195,7 @@ the gender.
  'url': 'https://en.wikipedia.org//w/index.php?title=List_of_nominated_members_of_Rajya_Sabha&amp;oldid=818220921'}
 ```
 Here, Rumpley is another dog that appears on Tom and Jerry, but a minor character. This is an example that shows
-earlier spans are more likely to contain the right answer but without proper supervision, the model has no idea.  
+earlier spans are more likely to contain the right answer but without proper supervision, the model has no idea.
 ```
 {'gold_answers': ['Spike',
   'Spike',
