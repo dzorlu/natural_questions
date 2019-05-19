@@ -5,36 +5,32 @@ Google's [Natural Questions corpus](https://ai.google/research/pubs/pub47761),
 is a question answering dataset in which questions consist of queries issued to the
 search engine whereas answers are corresponding Wikipedia pages. The answers are annotated in long and short form.
 The long and short annotations might be empty however - The answer to the search query can be a Yes / No answer or
-the Wikipedia entry might not contain the answer. The breakdown is best illustrated in the original paper.
+the Wikipedia entry might not contain the answer. The breakdown is best illustrated in the original paper reproduced below.
+
 
 
 ![Figure 1](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/Figure%201.png)
 
-The repo replicates the code and results presented in [A BERT Baseline for the Natural Questions](https://arxiv.org/abs/1901.08634). 
-The paper fine-tunes the [BERT model](https://arxiv.org/abs/1810.04805).
+
+This repo replicates the code and results presented in [A BERT Baseline for the Natural Questions](https://arxiv.org/abs/1901.08634).
 
 ## Pre-processing
-I mostly follow the baseline paper. 
-
 Preprocessing script generates all possible instances of the context for a given training example with a sliding window approach,
 appended to the question tokens and special characters. Because the instances for which an answer is
-present is very sparse, the script downsamples all null instances with a ratio of 100:1. 
+present is very sparse, the script downsamples all null instances with a ratio of 500:1 in order to generate a balanced dataset.
 
 If a short answer is present within a span, the indices point to the smllest span containing all annotated short answer spans.
 If only a long answer is present, indices point to the span of the long answer. If neither is found, indices
 point to the "[CLS]" token.
 
-NQ includes 5-way annotations on 7,830 items for development data. If at least 2 out of 5 annotators have given a non-null answer on the
-example, then the system is required to output a non-null answer that is seen at least once in the 5 annotations;
-conversely if fewer than 2 annotators give a non-null long answer, the system is required to return NULL as its output(1).
+The development data contains 5-way annotations on 7,830 items. If at least 2 out of 5 annotators have given a non-null answer on the
+example, then the system is required to output a non-null answer that matches one of the 5 annotations;
+conversely if fewer than 2 annotators give a non-null long answer, the system is required to return NULL as its output.
 
-Hence, when processing the evaluation dataset, the module discards any span that has less than two target annotations. The annotations, in turn,
-are used at evaluation time whether the model prediction is accurate or not. 
+Hence, processing the evaluation dataset, the module discards any span that has less than two target annotations. The annotations, in turn,
+are used at eval time to estimate the model loss, precision, and recall on span basis. Measuring the accuracy of the model both on span basis
+and the document basis allowed me to work on modeling and post-processing components separately.
 
-The baseline paper introduces special markup tokens to point the model to tables etc,
-where answers are most likely to be found. I have not implemented this yet. Yes/No answers are not taken into consideration either.
-
-Train and dev files are expected to live under $BERT_DATA_DIR
 
 ```buildoutcfg
 python preprocessing/preprocessing.py \
@@ -45,11 +41,10 @@ python preprocessing/preprocessing.py \
 ```
 
 
-
 ## Fine-tuning
-Fine tuning extends the [BERT library](https://github.com/google-research/bert) and reaches 57% accuracy on the dev set.
-All of the parameters of BERT and the single layer `W` on top that transforms BERT outputs onto span predictions
- are fine tuned jointly to maximize the log-probability of the correct span.
+Fine tuning extends the [BERT library](https://github.com/google-research/bert).
+A single layer `W` on top that transforms BERT outputs onto span predictions. The entire model is fine tuned jointly to
+maximize the log-probability of the correct span.
 
 ```
  python run_nq.py \
@@ -66,41 +61,21 @@ All of the parameters of BERT and the single layer `W` on top that transforms BE
     --save_checkpoints_steps 1000
 ```
 
-The model is trained approximately for 3 epochs.
-
-The span predictions are calculated taking the argmax
-over two dimensions and masking the upper-right corner of start and end span combinations.
+The model is trained approximately for 3 epochs. The span predictions are calculated taking the maximum combined score
+of start and end token in a given span, where end token index must be larger or equal to start token.
 
 ## inference / post-processing
-The inference stage consists of (i) making predictions for each span for a document (ii) aggregating the span predictions 
-over to get a single prediction for a given document. Because the `no-answer` is indexed to zero and is an option in each
-span prediction, most of which genuinly does not have an answer, post-processing step needs to take the double-counting into account. The paper does that by always making 
-a prediction and adjusting the answer with the help of the evaluation script.
+Postprocessing step aggregates span predictions to the document level. In particular, if no answer is present in any of the spans for a document,
+the postprocessing script assigns a null-answer to the document. if an answer is present for a given document, the script takes the answer
+with the highest score. Unlike the baseline model, that emits a prediction for each document and then adjusts the answers based on the score distribution,
+I leave the document-level predictions same. A well-calibrated model should match the the target distribution without any pruning or adjustments.
 
-For each example, I exclude any null predictions. I take the prediction with highest count - this means that overlapping context gave the same answer-
-, if there is a tie, 
-
-
- 
-
-|        |   end_byte |   example_id |   score |   start_byte |
-|-------:|-----------:|-------------:|--------:|-------------:|
-| 139660 |      86187 | -8.15243e+18 |     150 |        85543 |
-| 139663 |          0 | -8.15243e+18 |    5175 |            0 |
-| 139672 |          0 | -8.15243e+18 |     395 |            0 |
-| 139675 |     110326 | -8.15243e+18 |     925 |       110314 |
-| 139676 |          0 | -8.15243e+18 |  427739 |            0 |
 
 ```buildoutcfg
-{"long-best-threshold-f1": 0.5089528999610743, 
-"long-best-threshold-precision": 0.4613620324629499, 
-"long-best-threshold-recall": 0.5674913194444444, 
-"long-best-threshold": 16.0, 
-"long-recall-at-precision>=0.5": 0.4769965277777778, 
-"long-precision-at-precision>=0.5": 0.5012542759407069}
+
 ```
 
+## error analysis
 
 
 
-(1) [Natural Questions: a Benchmark for Question Answering Research](https://storage.googleapis.com/pub-tools-public-publication-data/pdf/b8c26e4347adc3453c15d96a09e6f7f102293f71.pdf)
