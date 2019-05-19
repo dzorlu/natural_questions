@@ -41,7 +41,7 @@ python preprocessing/preprocessing.py \
 ```
 
 
-## Fine-tuning
+## fine-tuning
 Fine tuning extends the [BERT library](https://github.com/google-research/bert).
 A single layer `W` on top that transforms BERT outputs onto span predictions. The entire model is fine tuned jointly to
 maximize the log-probability of the correct span.
@@ -71,11 +71,12 @@ with the highest score. Unlike the baseline model, that emits a prediction for e
 I leave the document-level predictions same. A well-calibrated model should match the the target distribution without any pruning or adjustments.
 
 
-```buildoutcfg
+```
+
 
 ```
 
 ## error analysis
-
+A detailed error analysis can be found in the [notebook](https://github.com/dzorlu/natural_questions/blob/master/error_analysis.ipynb).
 
 
