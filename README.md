@@ -1,11 +1,11 @@
 (WIP)
 
 # Natural Questions
-Google recently introduced the [Natural Questions corpus](https://ai.google/research/pubs/pub47761), 
-a question answering dataset in which questions consist of queries issued to the Google 
-search engine and the answers that  are annotated in long and short form found in the corresponding Wikipedia 
-article. The way the problem is set up such that a question can have both short and long answers, 
-only a long answer, a yes/no answer, or no answer at all.
+Google's [Natural Questions corpus](https://ai.google/research/pubs/pub47761),
+is a question answering dataset in which questions consist of queries issued to the
+search engine whereas answers are corresponding Wikipedia pages. The answers are annotated in long and short form.
+The long and short annotations might be empty however - The answer to the search query can be a Yes / No answer or
+the Wikipedia entry might not contain the answer. The breakdown is best illustrated in the original paper.
 
 The repo replicates the code and results presented in [A BERT Baseline for the Natural Questions](https://arxiv.org/abs/1901.08634). 
 The paper fine-tunes the [BERT model](https://arxiv.org/abs/1810.04805).
