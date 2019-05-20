@@ -324,11 +324,8 @@ def main(_):
     eval_spec = tf.estimator.EvalSpec(input_fn=train_dev_fn,steps=FLAGS.eval_steps)
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
-  #TODO: predict and write predictions.
   if FLAGS.do_predict:
     from processing import postprocessing
-    output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
-    # TODO: _predict_path for final submission
     predict_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if
                      _file.endswith("inference.tf_record")]
     predict_json_files = [os.path.join(_dev_path, _file) for _file in os.listdir(_dev_path) if _file.endswith(".jsonl")]
@@ -353,7 +350,7 @@ def main(_):
     candidates_file = os.path.join(FLAGS.output_dir, "candidates.json")
     with tf.gfile.Open(candidates_file, "w") as f:
       json.dump(candidates, f, indent=4)
-    predictions = postprocessing.extract_prediction(results, candidates)
+    predictions = postprocessing.extract_prediction(results, candidates,remove_answers_cutoff=50.)
     predictions_file = os.path.join(FLAGS.output_dir, "final_predictions.json")
     with tf.gfile.Open(predictions_file, "w") as f:
       json.dump(predictions, f, indent=4)
@@ -361,7 +358,4 @@ def main(_):
 
 if __name__ == "__main__":
   tf.logging.info(FLAGS)
-  # flags.mark_flag_as_required("vocab_file")
-  # flags.mark_flag_as_required("bert_config_file")
-  # flags.mark_flag_as_required("output_dir")
   tf.app.run()
