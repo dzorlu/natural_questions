@@ -29,7 +29,7 @@ flags.DEFINE_string(
     "The output directory where the tf records will be written.")
 
 flags.DEFINE_string(
-    "vocab_file", None,
+    "nq_vocab_file", None,
     "The path to vocab file that includes special tokens.")
 
 
@@ -276,6 +276,8 @@ def convert_example(example,
             _start_byte = start_bytes[split_token_index]
             start_bytes_span.append(_start_byte)
             end_bytes_span.append(end_bytes[split_token_index])
+        # the context_id token is appended at the end. this does not use the tokenizer but because
+        # the context_id variety is already in the vocabulary, convert_tokens_to_ids below works.
         # determine the context_id given start_byte
         # this lumps the text that preceeds first start_byte into the same context_id with text
         # that comes after first start_byte.
@@ -286,8 +288,8 @@ def convert_example(example,
             if context_id > MAX_CONTEXT_ID:
                 context_id = 99
             return "[context_id=%s]" % context_id
-
         span_start_byte = start_bytes[doc_span.start]
+        #TODO: Do I need a SEP token to end the span?
         tokens.append(_get_context_id(span_start_byte))
         segment_ids.append(1)
         start_bytes_span.append(0)
@@ -397,7 +399,7 @@ def main(_):
   _train_path = os.path.join(FLAGS.bert_data_dir, 'train')
   [tf.gfile.MakeDirs(_dir) for _dir in [_train_path, _dev_path]]
 
-  tokenizer = create_tokenizer(FLAGS.vocab_file)
+  tokenizer = create_tokenizer(FLAGS.nq_vocab_file)
 
   def _create_tf_records(mode, _train_file):
     tf.logging.info(_train_file)
