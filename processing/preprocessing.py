@@ -204,8 +204,12 @@ def convert_example(example,
         for annotation in example.get('annotations'):
             target_byte_ranges.append(_get_target_byte_range(annotation))
 
+    # context supervision - for each span, tell the model the index of long answer candidate
+
+
     for (i, token) in enumerate(example.get('document_tokens')):
         _token = token.get('token')
+        #TODO: Handle special tokens
         sub_tokens = tokenizer.tokenize(_token)
         start_byte = token.get('start_byte')
         end_byte = token.get('end_byte')
@@ -216,7 +220,6 @@ def convert_example(example,
                 end_bytes.append(end_byte)
                 token_ix.append(i)
             else:
-                # TODO: Need to build the DOM for the example to infer long answers.
                 pass
 
     start_bytes = np.array(start_bytes)
