@@ -4,8 +4,6 @@ import tensorflow_hub as hub
 import collections
 import numpy as np
 import os
-
-import bert
 from bert import tokenization
 
 # This is a path to an uncased (all lowercase) version of BERT
@@ -322,7 +320,7 @@ def convert_example(example,
                 except:
                   tf.logging.info('error encountered..')
                   continue
-                if not 0 <= e < max_seq_length or not 0 <= s < max_seq_length:
+                if not 0 <= e < max_seq_length or not 0 <= s <= max_seq_length:
                   # this ensures the first/last token for the byte is included in the current span.
                   tf.logging.info("{} is outside the range".format((s,e)))
                   continue

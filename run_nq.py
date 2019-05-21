@@ -350,7 +350,7 @@ def main(_):
     candidates_file = os.path.join(FLAGS.output_dir, "candidates.json")
     with tf.gfile.Open(candidates_file, "w") as f:
       json.dump(candidates, f, indent=4)
-    predictions = postprocessing.extract_prediction(results, candidates)
+    predictions = postprocessing.extract_prediction(results, candidates,remove_answers_cutoff=50.)
     predictions_file = os.path.join(FLAGS.output_dir, "final_predictions.json")
     with tf.gfile.Open(predictions_file, "w") as f:
       json.dump(predictions, f, indent=4)
@@ -358,7 +358,4 @@ def main(_):
 
 if __name__ == "__main__":
   tf.logging.info(FLAGS)
-  # flags.mark_flag_as_required("vocab_file")
-  # flags.mark_flag_as_required("bert_config_file")
-  # flags.mark_flag_as_required("output_dir")
   tf.app.run()
