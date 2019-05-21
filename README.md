@@ -142,7 +142,7 @@ A detailed error analysis can be found in the [notebook](https://github.com/dzor
 2- Comparing the distribution of span indices where the model prediction is found (left) versus where the annotations lie in dev and training set (right),
 the model does not look well-calibrated. Specifically, 75% of the model predictions fall within the first 10 document span, whereas first 10 document spans
 contain more than 90% of the answers in training and dev dataset.
-This is probably because the model V1 does not provide supervision in terms of location of the answer. In the benchmark paper,
+This is probably because the model V1 is not trained on supervision in terms of location of the answer. In the benchmark paper,
 this is achieved by providing special markup tokens to give the model a notion of which part of the document it is reading.
 
 ![Model answers span distribution](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/model_answer_span_distribution.png)

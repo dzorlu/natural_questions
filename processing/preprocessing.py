@@ -6,6 +6,8 @@ import numpy as np
 import os
 from bert import tokenization
 
+import re
+
 # This is a path to an uncased (all lowercase) version of BERT
 BERT_MODEL_HUB = "https://tfhub.dev/google/bert_uncased_L-12_H-768_A-12/1"
 CLS = "[CLS]"
@@ -13,6 +15,9 @@ SEP = "[SEP]"
 
 DOWNSAMPLE = 100
 BETA = 2 #for evalution
+# context_id special tokens must be in the vocabulary, and hence limited to a number.
+# if it exceeds the max id, move on to the next example.
+MAX_CONTEXT_ID = 50
 
 
 flags = tf.flags
@@ -22,6 +27,10 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string(
     "bert_data_dir", None,
     "The output directory where the tf records will be written.")
+
+flags.DEFINE_string(
+    "vocab_file", None,
+    "The path to vocab file that includes special tokens.")
 
 
 flags.DEFINE_integer(
@@ -128,17 +137,12 @@ class InputFeatures(object):
         return s
 
 
-def create_tokenizer_from_hub_module():
-    """Get the vocab file and casing info from the Hub module."""
-    with tf.Graph().as_default():
-        bert_module = hub.Module(BERT_MODEL_HUB)
-        tokenization_info = bert_module(signature="tokenization_info", as_dict=True)
-        with tf.Session() as sess:
-            vocab_file, do_lower_case = sess.run([tokenization_info["vocab_file"],
-                                                  tokenization_info["do_lower_case"]])
-
-    return tokenization.FullTokenizer(
-        vocab_file=vocab_file, do_lower_case=do_lower_case)
+def create_tokenizer(vocab_file):
+    """
+    Get the modified vocab file. 
+    Includes special tokens [context_id=n] where n <= 50
+    """
+    return tokenization.FullTokenizer(vocab_file=vocab_file, do_lower_case=True)
 
 
 def convert_example(example,
@@ -202,12 +206,8 @@ def convert_example(example,
         for annotation in example.get('annotations'):
             target_byte_ranges.append(_get_target_byte_range(annotation))
 
-    # context supervision - for each span, tell the model the index of long answer candidate
-
-
     for (i, token) in enumerate(example.get('document_tokens')):
         _token = token.get('token')
-        #TODO: Handle special tokens
         sub_tokens = tokenizer.tokenize(_token)
         start_byte = token.get('start_byte')
         end_byte = token.get('end_byte')
@@ -217,13 +217,11 @@ def convert_example(example,
                 start_bytes.append(start_byte)
                 end_bytes.append(end_byte)
                 token_ix.append(i)
-            else:
-                pass
 
     start_bytes = np.array(start_bytes)
     end_bytes = np.array(end_bytes)
 
-    # The -3 accounts for [CLS], [SEP] and [SEP]
+    # The -3 accounts for [CLS], [SEP] and [id=n]
     total_offset = len(query_tokens) + 3
     max_tokens_for_doc = max_seq_length - total_offset
 
@@ -243,6 +241,14 @@ def convert_example(example,
                 break
             start_offset += min(length, doc_stride)
         return doc_spans
+
+
+    # context_id supervision - for each span, tell the model the index of long answer candidate
+    # top level candidates does not cover the entire text. I use start_byte as the index to ensure
+    # to assign a context_id for each span.
+    top_level_candidates = [c for c in example['long_answer_candidates'] if c['top_level']]
+    # [(context_id, start_byte), ...]
+    context_ids = [(i, c['start_byte']) for i, c in enumerate(top_level_candidates)]
 
     doc_spans = _compute_nb_spans(all_doc_tokens)
     # break the context into chunks.
@@ -267,9 +273,22 @@ def convert_example(example,
             split_token_index = doc_span.start + i
             tokens.append(all_doc_tokens[split_token_index])
             segment_ids.append(1)
-            start_bytes_span.append(start_bytes[split_token_index])
+            _start_byte = start_bytes[split_token_index]
+            start_bytes_span.append(_start_byte)
             end_bytes_span.append(end_bytes[split_token_index])
-        tokens.append(SEP)
+        # determine the context_id given start_byte
+        # this lumps the text that preceeds first start_byte into the same context_id with text
+        # that comes after first start_byte.
+        def _get_context_id(_span_start_byte):
+            context_id = [c[0] for c in context_ids if c[1] > _span_start_byte]
+            # if null, return zero. if context_id exceeds MAX_CONTEXT_ID, return the same token
+            context_id = context_id[0] if context_id else 0
+            if context_id > MAX_CONTEXT_ID:
+                context_id = 99
+            return "[context_id=%s]" % context_id
+
+        span_start_byte = start_bytes[doc_span.start]
+        tokens.append(_get_context_id(span_start_byte))
         segment_ids.append(1)
         start_bytes_span.append(0)
         end_bytes_span.append(0)
@@ -378,7 +397,7 @@ def main(_):
   _train_path = os.path.join(FLAGS.bert_data_dir, 'train')
   [tf.gfile.MakeDirs(_dir) for _dir in [_train_path, _dev_path]]
 
-  tokenizer = create_tokenizer_from_hub_module()
+  tokenizer = create_tokenizer(FLAGS.vocab_file)
 
   def _create_tf_records(mode, _train_file):
     tf.logging.info(_train_file)
