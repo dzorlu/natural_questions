@@ -148,9 +148,9 @@ this is achieved by providing special markup tokens to give the model a notion o
 ![Model answers span distribution](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/model_answer_span_distribution.png)
 ![Train and dev dataset answers span distribution](https://github.com/dzorlu/natural_questions/blob/master/supporting_docs/train_answer_span_distribution.png)
 
-3- The most obvious errors are where the model gets the synthetic properties right but the context wrong.
+3- The most obvious errors are where the model gets the synthetic properties right but the semantics wrong.
 
-In the example below, the span prediction is indeed a temperature - but contextual it is wrong.
+In the example below, the span prediction is indeed a temperature - but semantically it is wrong.
 
 ```
 {'gold_answers': [],
